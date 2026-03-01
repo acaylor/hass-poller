@@ -1,0 +1,31 @@
+# macOS / editor
+.DS_Store
+.vscode/
+.idea/
+
+# Environment files
+.env
+.env.*
+
+# Go build artifacts
+bin/
+dist/
+build/
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+*.prof
+coverage.out
+
+# Local binary produced in project root
+ha-timescale-poller
+
+# Dependency/vendor caches (optional local use)
+vendor/
+
+# Temp and logs
+*.log
+tmp/
