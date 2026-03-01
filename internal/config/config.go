@@ -3,18 +3,24 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 type Config struct {
-	HABaseURL       string
-	HAToken         string
-	PGDSN           string
-	PollInterval    time.Duration
-	HTTPTimeout     time.Duration
-	EntityAllowlist []string
-	EntityBlocklist []string
+	HABaseURL        string
+	HAToken          string
+	PGDSN            string
+	PollInterval     time.Duration
+	HTTPTimeout      time.Duration
+	EntityAllowlist  []string
+	EntityBlocklist  []string
+	EpsilonDefault   float64
+	EpsilonOverrides map[string]float64
+	HTTPListenAddr   string
 }
 
 func Load() (Config, error) {
@@ -26,6 +32,8 @@ func Load() (Config, error) {
 		HTTPTimeout:     parseDurationWithDefault("HTTP_TIMEOUT", 10*time.Second),
 		EntityAllowlist: splitCSVWithDefault(os.Getenv("ENTITY_ALLOWLIST"), []string{"sensor.*"}),
 		EntityBlocklist: splitCSVWithDefault(os.Getenv("ENTITY_BLOCKLIST"), nil),
+		EpsilonDefault:  parseFloatWithDefault("EPSILON_DEFAULT", 0),
+		HTTPListenAddr:  stringWithDefault(os.Getenv("HTTP_LISTEN_ADDR"), ":8080"),
 	}
 
 	if cfg.HABaseURL == "" {
@@ -41,6 +49,14 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("POLL_INTERVAL must be > 0")
 	}
 
+	if configFile := strings.TrimSpace(os.Getenv("CONFIG_FILE")); configFile != "" {
+		overrides, err := loadEpsilonOverrides(configFile)
+		if err != nil {
+			return Config{}, fmt.Errorf("load config file: %w", err)
+		}
+		cfg.EpsilonOverrides = overrides
+	}
+
 	return cfg, nil
 }
 
@@ -54,6 +70,42 @@ func parseDurationWithDefault(envKey string, fallback time.Duration) time.Durati
 		return fallback
 	}
 	return d
+}
+
+func stringWithDefault(val, fallback string) string {
+	val = strings.TrimSpace(val)
+	if val == "" {
+		return fallback
+	}
+	return val
+}
+
+func parseFloatWithDefault(envKey string, fallback float64) float64 {
+	raw := strings.TrimSpace(os.Getenv(envKey))
+	if raw == "" {
+		return fallback
+	}
+	v, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return fallback
+	}
+	return v
+}
+
+type configFile struct {
+	EpsilonOverrides map[string]float64 `yaml:"epsilon_overrides"`
+}
+
+func loadEpsilonOverrides(path string) (map[string]float64, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var cf configFile
+	if err := yaml.Unmarshal(data, &cf); err != nil {
+		return nil, err
+	}
+	return cf.EpsilonOverrides, nil
 }
 
 func splitCSVWithDefault(raw string, fallback []string) []string {

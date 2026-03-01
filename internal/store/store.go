@@ -33,6 +33,11 @@ func (s *Store) Close() {
 	s.pool.Close()
 }
 
+func (s *Store) Healthy(ctx context.Context) bool {
+	err := s.pool.Ping(ctx)
+	return err == nil
+}
+
 func (s *Store) EnsureSchema(ctx context.Context, schemaSQL string) error {
 	for _, stmt := range splitSQLStatements(schemaSQL) {
 		if _, err := s.pool.Exec(ctx, stmt); err != nil {

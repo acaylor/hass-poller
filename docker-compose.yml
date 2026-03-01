@@ -14,12 +14,14 @@ services:
     depends_on:
       - timescaledb
     environment:
-      HA_BASE_URL: https://home.lan.ayjc.net
+      HA_BASE_URL: ${HA_BASE_URL}
       HA_TOKEN: ${HA_TOKEN}
       PG_DSN: postgres://postgres:changeme@timescaledb:5432/warehouse?sslmode=disable
       POLL_INTERVAL: 1m
       ENTITY_ALLOWLIST: sensor.*
       ENTITY_BLOCKLIST: ''
+    ports:
+      - "8080:8080"
     restart: unless-stopped
 
 volumes:
