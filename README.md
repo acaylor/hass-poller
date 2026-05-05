@@ -27,10 +27,7 @@ docker compose up -d
 3. Verify it's working:
 
 ```bash
-# Check health
 curl http://localhost:8080/healthz
-
-# Check logs
 docker compose logs poller
 ```
 
@@ -56,19 +53,16 @@ All configuration is via environment variables:
 
 ### Entity filtering
 
-Entities are filtered in two stages using Go's [`path.Match`](https://pkg.go.dev/path#Match) glob syntax:
-
-1. **Allowlist** — entity must match at least one pattern (default: `sensor.*`)
-2. **Blocklist** — entity is excluded if it matches any pattern, even if it passed the allowlist
-
 ```bash
 ENTITY_ALLOWLIST=sensor.*,binary_sensor.*
 ENTITY_BLOCKLIST=sensor.energy_*,sensor.*_linkquality
 ```
 
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#filtering) for filter semantics.
+
 ### Epsilon overrides
 
-To suppress writes from noisy sensors, set a per-entity epsilon threshold via a YAML config file:
+Suppress writes from noisy sensors via a YAML config file:
 
 ```yaml
 # config.yaml
@@ -81,74 +75,44 @@ epsilon_overrides:
 CONFIG_FILE=/etc/hapoller/config.yaml
 ```
 
-With `EPSILON_DEFAULT=0` (strict equality), a value is only written when it differs from the last written value. With a non-zero epsilon, the value must change by more than the threshold.
+## Endpoints
 
-## Database schema
-
-The schema is embedded in the binary and applied automatically on startup. It creates:
-
-- **`ha_numeric`** — hypertable for raw measurements (`ts`, `entity_id`, `value`, `unit`); compressed after 7 days, dropped after 90 days
-- **`ha_numeric_1h`** — continuous aggregate with hourly `avg`, `min`, `max`, `count` per entity; dropped after 1 year
-- **`ha_numeric_1d`** — continuous aggregate with daily `avg`, `min`, `max`, `count` per entity; **kept forever** (no retention policy)
-
-The tiered design means recent data has full resolution, mid-range queries (months) use the hourly rollup, and long-range historical queries (years+) use the daily rollup. Daily aggregates are computed from raw data within the 90-day window and persist after raw chunks are dropped.
+| Path | Description |
+|---|---|
+| `/healthz` | Returns 200 if last poll was within 2 minutes and DB is reachable |
+| `/metrics` | Prometheus metrics (`hapoller_poll_total`, `hapoller_cycle_duration_seconds`, `hapoller_rows_inserted_total`, `hapoller_entities_seen`, `hapoller_entities_skipped`) |
 
 ## Grafana queries
 
-Add a PostgreSQL datasource pointing to your TimescaleDB instance, then use these queries:
-
-**Raw data (recent):**
+Point a PostgreSQL datasource at your TimescaleDB instance. Pick the table that matches your time range:
 
 ```sql
-SELECT ts AS time, value
-FROM ha_numeric
-WHERE entity_id = 'sensor.kitchen_temperature'
-  AND $__timeFilter(ts)
-ORDER BY ts;
+-- Recent (raw, 90 days):
+SELECT ts AS time, value FROM ha_numeric
+WHERE entity_id = 'sensor.kitchen_temperature' AND $__timeFilter(ts) ORDER BY ts;
+
+-- Months (hourly rollup, 1 year):
+SELECT bucket AS time, avg, min, max FROM ha_numeric_1h
+WHERE entity_id = 'sensor.kitchen_temperature' AND $__timeFilter(bucket) ORDER BY bucket;
+
+-- Years (daily rollup, kept forever):
+SELECT bucket AS time, avg, min, max FROM ha_numeric_1d
+WHERE entity_id = 'sensor.kitchen_temperature' AND $__timeFilter(bucket) ORDER BY bucket;
 ```
 
-**Hourly rollup (months):**
-
-```sql
-SELECT bucket AS time, avg, min, max
-FROM ha_numeric_1h
-WHERE entity_id = 'sensor.kitchen_temperature'
-  AND $__timeFilter(bucket)
-ORDER BY bucket;
-```
-
-**Daily rollup (long-range, years):**
-
-```sql
-SELECT bucket AS time, avg, min, max
-FROM ha_numeric_1d
-WHERE entity_id = 'sensor.kitchen_temperature'
-  AND $__timeFilter(bucket)
-ORDER BY bucket;
-```
-
-Use Grafana's "fill: previous" or "connect null values" setting to handle gaps between change-only writes.
+Use Grafana's "fill: previous" or "connect null values" to handle gaps between change-only writes.
 
 ## Backups
 
-The `backups/` directory is gitignored. To take a logical backup of the warehouse database while the stack is running:
+The `backups/` directory is gitignored. Quick `pg_dump` snapshot while the stack is running:
 
 ```bash
 mkdir -p backups
-docker exec hass-poller-timescaledb-1 pg_dump -U postgres -d warehouse -Fp \
-  | gzip > "backups/warehouse-$(date +%Y%m%d-%H%M%S).sql.gz"
-```
-
-For consistency, stop the poller first so no writes happen during the dump:
-
-```bash
 docker compose stop poller
 docker exec hass-poller-timescaledb-1 pg_dump -U postgres -d warehouse -Fp \
   | gzip > "backups/warehouse-$(date +%Y%m%d-%H%M%S).sql.gz"
 docker compose start poller
 ```
-
-`pg_dump` will print warnings about circular foreign-key constraints on TimescaleDB's internal `hypertable`, `chunk`, and `continuous_agg` catalog tables. These are expected and do not indicate a problem with your data.
 
 To restore into an empty database:
 
@@ -157,66 +121,14 @@ gunzip -c backups/warehouse-YYYYMMDD-HHMMSS.sql.gz \
   | docker exec -i hass-poller-timescaledb-1 psql -U postgres -d warehouse
 ```
 
-For a TimescaleDB-aware restore (recommended for migrations between major versions), see the [official restore guide](https://docs.timescale.com/self-hosted/latest/backup-and-restore/pg-dump-and-restore/).
+`pg_dump` warnings about circular foreign-key constraints on TimescaleDB's internal catalog tables are expected. For TimescaleDB-aware restores between major versions, see the [official guide](https://docs.timescale.com/self-hosted/latest/backup-and-restore/pg-dump-and-restore/).
 
-## Endpoints
+## Documentation
 
-| Path | Description |
-|---|---|
-| `/healthz` | Returns 200 if last poll was within 2 minutes and DB is reachable |
-| `/metrics` | Prometheus metrics (`hapoller_poll_total`, `hapoller_cycle_duration_seconds`, `hapoller_rows_inserted_total`, `hapoller_entities_seen`, `hapoller_entities_skipped`) |
-
-## Project layout
-
-```
-cmd/ha-timescale-poller/main.go   # entrypoint
-internal/config/                   # environment + YAML config loading
-internal/engine/                   # poll loop, change detection, scheduling
-internal/filter/                   # allowlist/blocklist glob matching
-internal/ha/                       # Home Assistant API client
-internal/httpserver/               # /healthz + /metrics server
-internal/store/                    # pgxpool, CopyFrom inserts, schema migration
-schema.sql                         # TimescaleDB schema (embedded via go:embed)
-schema.go                          # go:embed directive
-Dockerfile                         # multi-stage build (distroless runtime)
-docker-compose.yml                 # poller + TimescaleDB
-```
-
-## Building
-
-```bash
-# Binary
-go build -o ha-timescale-poller ./cmd/ha-timescale-poller
-
-# Docker
-docker build -t ha-timescale-poller .
-```
-
-## Running without Docker
-
-```bash
-export HA_BASE_URL=https://homeassistant.local:8123
-export HA_TOKEN=your-token
-export PG_DSN=postgres://user:pass@localhost:5432/warehouse?sslmode=disable
-
-./ha-timescale-poller
-```
-
-Or via systemd:
-
-```ini
-[Unit]
-Description=Home Assistant TimescaleDB Poller
-After=network.target
-
-[Service]
-ExecStart=/usr/local/bin/ha-timescale-poller
-Restart=always
-EnvironmentFile=/etc/ha-timescale-poller.env
-
-[Install]
-WantedBy=multi-user.target
-```
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — components, data flow, schema details
+- [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) — build, run, test
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — branch naming, PR workflow, release process
+- [`CHANGELOG.md`](CHANGELOG.md) — release notes
 
 ## License
 
