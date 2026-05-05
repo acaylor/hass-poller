@@ -8,7 +8,7 @@ A small Go service that polls Home Assistant every minute, extracts numeric sens
 - Entity filtering via **allowlist** and **blocklist** with glob pattern matching
 - **Epsilon-based change detection** to avoid writing unchanged values (configurable per-entity)
 - Batch inserts via `pgx.CopyFrom` for efficient writes
-- TimescaleDB compression (7 days), retention (90 days), and hourly continuous aggregate
+- TimescaleDB compression (7 days) and tiered retention: raw 90 days, hourly 1 year, daily kept forever
 - Prometheus metrics at `/metrics` and health check at `/healthz`
 - Graceful shutdown with in-flight write flush
 - Single binary, distroless Docker image
@@ -87,10 +87,11 @@ With `EPSILON_DEFAULT=0` (strict equality), a value is only written when it diff
 
 The schema is embedded in the binary and applied automatically on startup. It creates:
 
-- **`ha_numeric`** — hypertable for raw measurements (`ts`, `entity_id`, `value`, `unit`)
-- **`ha_numeric_1h`** — continuous aggregate with hourly `avg`, `min`, `max`, `count` per entity
-- **Compression policy** — compresses chunks older than 7 days
-- **Retention policy** — drops raw data older than 90 days
+- **`ha_numeric`** — hypertable for raw measurements (`ts`, `entity_id`, `value`, `unit`); compressed after 7 days, dropped after 90 days
+- **`ha_numeric_1h`** — continuous aggregate with hourly `avg`, `min`, `max`, `count` per entity; dropped after 1 year
+- **`ha_numeric_1d`** — continuous aggregate with daily `avg`, `min`, `max`, `count` per entity; **kept forever** (no retention policy)
+
+The tiered design means recent data has full resolution, mid-range queries (months) use the hourly rollup, and long-range historical queries (years+) use the daily rollup. Daily aggregates are computed from raw data within the 90-day window and persist after raw chunks are dropped.
 
 ## Grafana queries
 
@@ -106,7 +107,7 @@ WHERE entity_id = 'sensor.kitchen_temperature'
 ORDER BY ts;
 ```
 
-**Hourly rollup (long-range):**
+**Hourly rollup (months):**
 
 ```sql
 SELECT bucket AS time, avg, min, max
@@ -116,7 +117,47 @@ WHERE entity_id = 'sensor.kitchen_temperature'
 ORDER BY bucket;
 ```
 
+**Daily rollup (long-range, years):**
+
+```sql
+SELECT bucket AS time, avg, min, max
+FROM ha_numeric_1d
+WHERE entity_id = 'sensor.kitchen_temperature'
+  AND $__timeFilter(bucket)
+ORDER BY bucket;
+```
+
 Use Grafana's "fill: previous" or "connect null values" setting to handle gaps between change-only writes.
+
+## Backups
+
+The `backups/` directory is gitignored. To take a logical backup of the warehouse database while the stack is running:
+
+```bash
+mkdir -p backups
+docker exec hass-poller-timescaledb-1 pg_dump -U postgres -d warehouse -Fp \
+  | gzip > "backups/warehouse-$(date +%Y%m%d-%H%M%S).sql.gz"
+```
+
+For consistency, stop the poller first so no writes happen during the dump:
+
+```bash
+docker compose stop poller
+docker exec hass-poller-timescaledb-1 pg_dump -U postgres -d warehouse -Fp \
+  | gzip > "backups/warehouse-$(date +%Y%m%d-%H%M%S).sql.gz"
+docker compose start poller
+```
+
+`pg_dump` will print warnings about circular foreign-key constraints on TimescaleDB's internal `hypertable`, `chunk`, and `continuous_agg` catalog tables. These are expected and do not indicate a problem with your data.
+
+To restore into an empty database:
+
+```bash
+gunzip -c backups/warehouse-YYYYMMDD-HHMMSS.sql.gz \
+  | docker exec -i hass-poller-timescaledb-1 psql -U postgres -d warehouse
+```
+
+For a TimescaleDB-aware restore (recommended for migrations between major versions), see the [official restore guide](https://docs.timescale.com/self-hosted/latest/backup-and-restore/pg-dump-and-restore/).
 
 ## Endpoints
 

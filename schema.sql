@@ -40,3 +40,26 @@ SELECT add_continuous_aggregate_policy('ha_numeric_1h',
   schedule_interval => INTERVAL '15 minutes',
   if_not_exists => TRUE
 );
+
+SELECT add_retention_policy('ha_numeric_1h', INTERVAL '1 year', if_not_exists => TRUE);
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS ha_numeric_1d
+WITH (timescaledb.continuous) AS
+SELECT
+  time_bucket('1 day', ts) AS bucket,
+  entity_id,
+  avg(value) AS avg,
+  min(value) AS min,
+  max(value) AS max,
+  count(*)   AS n
+FROM ha_numeric
+GROUP BY bucket, entity_id
+WITH NO DATA;
+
+SELECT add_continuous_aggregate_policy('ha_numeric_1d',
+  start_offset => INTERVAL '7 days',
+  end_offset   => INTERVAL '1 day',
+  schedule_interval => INTERVAL '1 hour',
+  if_not_exists => TRUE
+);
+-- No retention policy on ha_numeric_1d: kept forever.

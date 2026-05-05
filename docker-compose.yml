@@ -19,10 +19,33 @@ services:
       PG_DSN: postgres://postgres:changeme@timescaledb:5432/warehouse?sslmode=disable
       POLL_INTERVAL: 1m
       ENTITY_ALLOWLIST: sensor.*
-      ENTITY_BLOCKLIST: ''
+      ENTITY_BLOCKLIST: >-
+        sensor.*_power_minute_average,
+        sensor.*_power_minute_average_*,
+        sensor.*_signal_level,
+        sensor.*_disk_write_rate,
+        sensor.*_storage_used,
+        sensor.vue3_energy_today_*,
+        sensor.vue3_energy_this_month_*,
+        sensor.range_energy_today,
+        sensor.range_energy_today_2,
+        sensor.range_energy_this_month,
+        sensor.range_energy_this_month_2,
+        sensor.dryer_energy_today,
+        sensor.dryer_energy_today_2,
+        sensor.dryer_energy_this_month,
+        sensor.dryer_energy_this_month_2
     ports:
-      - "8080:8080"
+      - "${HTTP_PORT:-8080}:8080"
     restart: unless-stopped
-
+  adminer:
+    image: adminer:5.4.2
+    depends_on:
+      - timescaledb
+    ports:
+      - "${ADMINER_PORT:-8081}:8080"
+    environment:
+      ADMINER_DEFAULT_SERVER: timescaledb
+    restart: unless-stopped
 volumes:
   tsdb-data:

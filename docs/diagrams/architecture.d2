@@ -1,0 +1,91 @@
+direction: right
+
+main: {
+  label: "cmd/ha-timescale-poller\napplication composition"
+  style.fill: "#e8f3ff"
+  style.stroke: "#2274a5"
+}
+
+config: {
+  label: "internal/config\nenv + YAML config"
+  style.fill: "#e8f3ff"
+  style.stroke: "#2274a5"
+}
+
+schema: {
+  label: "embedded schema.sql"
+  style.fill: "#e8f3ff"
+  style.stroke: "#2274a5"
+}
+
+runtime: {
+  label: "runtime components"
+  style.stroke: "#4f6f52"
+
+  engine: {
+    label: "internal/engine\npoll scheduler\nnumeric parsing\nepsilon change detection"
+  }
+
+  http_server: {
+    label: "internal/httpserver\n/healthz\n/metrics"
+  }
+}
+
+adapters: {
+  label: "adapters"
+  style.stroke: "#b56b00"
+
+  ha_client: {
+    label: "internal/ha\nHome Assistant API client"
+    style.fill: "#fff7e6"
+  }
+
+  filter: {
+    label: "internal/filter\nentity allowlist/blocklist"
+    style.fill: "#fff7e6"
+  }
+
+  store: {
+    label: "internal/store\npgxpool\nschema migration\nbatch inserts"
+    style.fill: "#fff7e6"
+  }
+}
+
+ha_api: {
+  label: "Home Assistant API\n/api/states"
+  shape: cloud
+  style.fill: "#f7f7f7"
+  style.stroke: "#777777"
+}
+
+database: {
+  label: "TimescaleDB\nha_numeric\nha_numeric_1h"
+  shape: cylinder
+  style.fill: "#f3efe0"
+  style.stroke: "#927a28"
+}
+
+metrics: {
+  label: "Prometheus registry\npoll, duration, rows,\nentity gauges"
+  style.fill: "#f7f7f7"
+  style.stroke: "#777777"
+}
+
+main -> config
+main -> runtime.engine
+main -> runtime.http_server
+main -> adapters.ha_client
+main -> adapters.filter
+main -> adapters.store
+schema -> adapters.store
+
+runtime.engine -> adapters.ha_client: "fetch states"
+runtime.engine -> adapters.filter: "include/exclude entities"
+runtime.engine -> adapters.store: "write changed numeric values"
+runtime.engine -> metrics: "update counters and gauges"
+
+runtime.http_server -> runtime.engine: "last poll + DB health"
+runtime.http_server -> metrics: "exposes metrics handler"
+
+adapters.ha_client -> ha_api: "GET with bearer token"
+adapters.store -> database: "CopyFrom + Ping"
