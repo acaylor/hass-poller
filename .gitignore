@@ -29,3 +29,6 @@ vendor/
 # Temp and logs
 *.log
 tmp/
+
+# Database backups (see README "Backups" section)
+backups/
