@@ -2,6 +2,39 @@ package engine
 
 import "testing"
 
+func TestEpsilonFor(t *testing.T) {
+	e := &Engine{
+		epsilonDefault: 0.01,
+		epsilonOverrides: map[string]float64{
+			"sensor.kitchen_temperature": 0.05,
+			"sensor.outdoor_humidity":    0.0, // explicit zero override
+		},
+	}
+	tests := []struct {
+		name     string
+		entityID string
+		want     float64
+	}{
+		{"override applies", "sensor.kitchen_temperature", 0.05},
+		{"explicit zero override is honored", "sensor.outdoor_humidity", 0.0},
+		{"missing entity falls back to default", "sensor.unrelated", 0.01},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := e.epsilonFor(tt.entityID); got != tt.want {
+				t.Errorf("epsilonFor(%q) = %v, want %v", tt.entityID, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestEpsilonFor_NilOverrides(t *testing.T) {
+	e := &Engine{epsilonDefault: 0.5}
+	if got := e.epsilonFor("sensor.anything"); got != 0.5 {
+		t.Errorf("epsilonFor with nil overrides = %v, want 0.5", got)
+	}
+}
+
 func TestShouldWrite(t *testing.T) {
 	tests := []struct {
 		name             string

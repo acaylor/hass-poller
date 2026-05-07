@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Added `.github/workflows/release.yml`: on push of a `v*.*.*` tag, extracts the matching `CHANGELOG.md` section and creates a GitHub release. The workflow is also compatible with Gitea Actions (Gitea reads `.github/workflows/`, and `softprops/action-gh-release` honors `$GITHUB_API_URL`).
 - Added `.github/workflows/test.yml`: on push to `main` and on every pull request, runs `go mod verify`, `go vet`, and `go test -race ./...` against the Go toolchain pinned in `go.mod`.
+- Added unit tests for `internal/config` (now at 100% coverage of statements) and for `engine.epsilonFor`. Total project coverage rose from ~9.7% to ~33.6%.
 
 ## [0.1.0] - 2026-05-05
 
