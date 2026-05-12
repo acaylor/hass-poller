@@ -5,6 +5,8 @@ on:
     branches:
       - main
   pull_request:
+  # Allow the release workflow to gate on this one via `uses:`.
+  workflow_call:
 
 permissions:
   contents: read
@@ -25,8 +27,36 @@ jobs:
       - name: Verify modules
         run: go mod verify
 
+      - name: Check formatting
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::The following files are not gofmt-clean:"
+            echo "$unformatted"
+            exit 1
+          fi
+
       - name: Vet
         run: go vet ./...
 
+      - name: govulncheck
+        uses: golang/govulncheck-action@v1
+        with:
+          go-version-input: ''
+          go-version-file: go.mod
+
       - name: Test
-        run: go test -race -count=1 ./...
+        run: go test -race -count=1 -coverprofile=coverage.out ./...
+
+      - name: Upload coverage profile
+        # actions/upload-artifact@v4 refuses to run on GHES, and Gitea
+        # Actions identifies as GHES. Skip on Gitea; on GitHub it uploads
+        # the coverage.out file as a workflow artifact.
+        if: github.server_url == 'https://github.com'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.out
+
+      - name: Verify Docker image builds
+        run: docker build -t hass-poller:ci .

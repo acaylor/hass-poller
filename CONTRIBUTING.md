@@ -56,5 +56,4 @@ Releases follow [Semantic Versioning](https://semver.org/). The release process:
    - Renames the `[Unreleased]` heading in `CHANGELOG.md` to `[<version>] - YYYY-MM-DD`.
    - Adds a fresh empty `[Unreleased]` heading above it.
 2. Merge the PR.
-3. Tag the merge commit `v<version>` and push the tag.
-4. Create a release on the Gitea repository linking to the changelog entry.
+3. Tag the merge commit `v<version>` and push the tag. The `.github/workflows/release.yml` workflow picks up the tag, extracts the matching `CHANGELOG.md` section, and publishes a GitHub release automatically.
