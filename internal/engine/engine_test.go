@@ -118,9 +118,9 @@ func TestShouldWrite(t *testing.T) {
 
 func TestParseNumericState(t *testing.T) {
 	tests := []struct {
-		name  string
-		raw   string
-		want  float64
+		name   string
+		raw    string
+		want   float64
 		wantOK bool
 	}{
 		{"integer", "42", 42, true},
@@ -163,7 +163,7 @@ func TestRunCycle_FiltersAndParses(t *testing.T) {
 			state("sensor.broken", "unavailable", ""),
 			state("sensor.text", "on", ""),
 			state("sensor.energy_total", "123.4", "kWh"), // blocked
-			state("binary_sensor.door", "on", ""),         // not in allowlist
+			state("binary_sensor.door", "on", ""),        // not in allowlist
 		},
 	}
 	st := &fakeStore{}
@@ -393,8 +393,8 @@ func TestTryRunCycle_LogsAndCountsErrors(t *testing.T) {
 	st := &fakeStore{}
 	e := testEngine(fetcher, st, []string{"sensor.*"}, nil, 0, nil)
 
-	e.tryRunCycle(context.Background())          // error branch
-	e.tryRunCycle(context.Background())          // mutex must have been released
+	e.tryRunCycle(context.Background()) // error branch
+	e.tryRunCycle(context.Background()) // mutex must have been released
 
 	if fetcher.Calls() != 2 {
 		t.Errorf("FetchStates called %d times, want 2 (mutex must release on error)", fetcher.Calls())

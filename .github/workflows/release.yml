@@ -1,11 +1,9 @@
 name: Release
 
-# Cuts a release whenever a v*.*.* tag is pushed.
-#
-# Compatible with both GitHub Actions and Gitea Actions:
-#   - Gitea reads workflows from both .gitea/workflows/ and .github/workflows/.
-#   - softprops/action-gh-release@v2 honors $GITHUB_API_URL, which Gitea sets
-#     to its own API base, so the same step creates a release on either host.
+# Cuts a release whenever a v*.*.* tag is pushed. The release workflow:
+#   1. Re-runs the full test suite (gating).
+#   2. Builds and pushes a multi-arch container image to ghcr.io.
+#   3. Creates a GitHub release with the changelog body for the version.
 
 on:
   push:
@@ -14,9 +12,14 @@ on:
 
 permissions:
   contents: write
+  packages: write
 
 jobs:
+  test:
+    uses: ./.github/workflows/test.yml
+
   release:
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - name: Check out the tag
@@ -41,7 +44,39 @@ jobs:
           echo "Extracted release notes:"
           cat release-notes.md
 
-      - name: Create release
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest
+
+      - name: Build and push multi-arch image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Create GitHub release
         uses: softprops/action-gh-release@v3
         with:
           name: ${{ github.ref_name }}

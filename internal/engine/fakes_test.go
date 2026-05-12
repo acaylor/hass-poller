@@ -12,12 +12,12 @@ import (
 // signals once on started and then receives from block before returning. This is
 // used to drive cycle-contention tests deterministically.
 type fakeFetcher struct {
-	mu       sync.Mutex
-	states   []ha.State
-	err      error
-	calls    int
-	started  chan struct{}
-	block    chan struct{}
+	mu      sync.Mutex
+	states  []ha.State
+	err     error
+	calls   int
+	started chan struct{}
+	block   chan struct{}
 }
 
 func (f *fakeFetcher) FetchStates(ctx context.Context) ([]ha.State, error) {

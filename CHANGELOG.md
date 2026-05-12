@@ -23,6 +23,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Refactored `docker-compose.yml` so every tunable (Postgres credentials, blocklist, host ports, poll interval, log level) is supplied via `.env` rather than hard-coded. The file is now a generic working dev stack; required variables fail-fast with a clear message if missing.
 - Removed the deployment-specific default `ENTITY_BLOCKLIST` that named individual circuits on the author's home setup. The blocklist now defaults to empty; see `.env.example` for representative patterns.
 
+- Extended `.github/workflows/test.yml`: added `gofmt -l` formatting check, `govulncheck` against the Go vuln DB, a `docker build` step that verifies the bundled Dockerfile, and coverage profile upload as a workflow artifact. The workflow is now also `workflow_call`-able so the release workflow can gate on it.
+- `.github/workflows/release.yml` now runs the test workflow as a prerequisite job (`needs: test`) before publishing, so a green release implies a green test run on the tagged code.
+- The release workflow now builds and pushes a multi-arch container image (`linux/amd64`, `linux/arm64`) to `ghcr.io/<owner>/<repo>` on every `v*.*.*` tag. Image tags include the full `MAJOR.MINOR.PATCH`, `MAJOR.MINOR`, and `latest`.
+- The `Dockerfile` now honors `$TARGETOS` / `$TARGETARCH` from BuildKit and runs the builder stage on `$BUILDPLATFORM`, so multi-arch builds cross-compile correctly instead of hard-coding `GOARCH=amd64`.
+- `renovate.json` now explicitly enumerates `gomod`, `dockerfile`, `docker-compose`, and `github-actions` as enabled managers, with GitHub Actions bumps grouped into a single PR.
+
 ### Removed
 
 - Removed `code-plan.md`, the pre-implementation design draft. `docs/ARCHITECTURE.md` is the maintained replacement.

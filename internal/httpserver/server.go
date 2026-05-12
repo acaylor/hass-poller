@@ -65,10 +65,10 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(map[string]any{
-		"healthy":    pollOK && dbOK,
-		"poll_ok":    pollOK,
-		"db_ok":      dbOK,
-		"last_poll":  lastPoll,
+		"healthy":   pollOK && dbOK,
+		"poll_ok":   pollOK,
+		"db_ok":     dbOK,
+		"last_poll": lastPoll,
 	})
 }
 

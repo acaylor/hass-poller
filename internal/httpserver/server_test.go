@@ -15,8 +15,8 @@ type stubChecker struct {
 	dbOK     bool
 }
 
-func (s stubChecker) LastSuccessfulPoll() time.Time           { return s.lastPoll }
-func (s stubChecker) DBHealthy(ctx context.Context) bool      { return s.dbOK }
+func (s stubChecker) LastSuccessfulPoll() time.Time      { return s.lastPoll }
+func (s stubChecker) DBHealthy(ctx context.Context) bool { return s.dbOK }
 
 func TestHandleHealth(t *testing.T) {
 	now := time.Now()
