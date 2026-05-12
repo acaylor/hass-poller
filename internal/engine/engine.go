@@ -46,6 +46,17 @@ var (
 	})
 )
 
+// StatesFetcher is the subset of the Home Assistant client the engine relies on.
+type StatesFetcher interface {
+	FetchStates(ctx context.Context) ([]ha.State, error)
+}
+
+// MeasurementStore is the subset of the TimescaleDB store the engine relies on.
+type MeasurementStore interface {
+	InsertMeasurements(ctx context.Context, m []store.Measurement) (int64, error)
+	Healthy(ctx context.Context) bool
+}
+
 type entityState struct {
 	value float64
 	unit  string
@@ -61,9 +72,9 @@ func ShouldWrite(current, last float64, epsilon float64, firstObservation bool) 
 }
 
 type Engine struct {
-	haClient         *ha.Client
+	haClient         StatesFetcher
 	entityFilter     *filter.GlobFilter
-	store            *store.Store
+	store            MeasurementStore
 	pollInterval     time.Duration
 	logger           *log.Logger
 	epsilonDefault   float64
@@ -74,9 +85,9 @@ type Engine struct {
 }
 
 func New(
-	haClient *ha.Client,
+	haClient StatesFetcher,
 	entityFilter *filter.GlobFilter,
-	store *store.Store,
+	store MeasurementStore,
 	pollInterval time.Duration,
 	epsilonDefault float64,
 	epsilonOverrides map[string]float64,

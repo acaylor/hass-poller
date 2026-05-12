@@ -17,21 +17,27 @@ A small Go service that polls Home Assistant every minute, extracts numeric sens
 
 1. Create a [long-lived access token](https://www.home-assistant.io/docs/authentication/#your-account-profile) in Home Assistant.
 
-2. Start the stack:
+2. Copy the example environment file and fill it in:
 
 ```bash
-export HA_TOKEN="your-token-here"
+cp .env.example .env
+# edit .env: set HA_TOKEN, change POSTGRES_PASSWORD, adjust ports if needed
+```
+
+3. Start the stack:
+
+```bash
 docker compose up -d
 ```
 
-3. Verify it's working:
+4. Verify it's working:
 
 ```bash
 curl http://localhost:8080/healthz
 docker compose logs poller
 ```
 
-The poller will immediately fetch all numeric `sensor.*` entities from HA and begin writing to TimescaleDB.
+The poller will immediately fetch all numeric `sensor.*` entities from HA and begin writing to TimescaleDB. Adminer is exposed on port 8081 for browsing the database.
 
 ## Configuration
 

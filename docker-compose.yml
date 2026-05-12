@@ -2,42 +2,32 @@ services:
   timescaledb:
     image: timescale/timescaledb:2.26.4-pg16
     environment:
-      POSTGRES_PASSWORD: changeme
-      POSTGRES_DB: warehouse
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-warehouse}
     volumes:
       - tsdb-data:/var/lib/postgresql/data
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
+    restart: unless-stopped
 
   poller:
     build: .
     depends_on:
       - timescaledb
     environment:
-      HA_BASE_URL: ${HA_BASE_URL}
-      HA_TOKEN: ${HA_TOKEN}
-      PG_DSN: postgres://postgres:changeme@timescaledb:5432/warehouse?sslmode=disable
-      POLL_INTERVAL: 1m
-      ENTITY_ALLOWLIST: sensor.*
-      ENTITY_BLOCKLIST: >-
-        sensor.*_power_minute_average,
-        sensor.*_power_minute_average_*,
-        sensor.*_signal_level,
-        sensor.*_disk_write_rate,
-        sensor.*_storage_used,
-        sensor.vue3_energy_today_*,
-        sensor.vue3_energy_this_month_*,
-        sensor.range_energy_today,
-        sensor.range_energy_today_2,
-        sensor.range_energy_this_month,
-        sensor.range_energy_this_month_2,
-        sensor.dryer_energy_today,
-        sensor.dryer_energy_today_2,
-        sensor.dryer_energy_this_month,
-        sensor.dryer_energy_this_month_2
+      HA_BASE_URL: ${HA_BASE_URL:?set HA_BASE_URL in .env}
+      HA_TOKEN: ${HA_TOKEN:?set HA_TOKEN in .env}
+      PG_DSN: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-warehouse}?sslmode=disable
+      POLL_INTERVAL: ${POLL_INTERVAL:-1m}
+      ENTITY_ALLOWLIST: ${ENTITY_ALLOWLIST:-sensor.*}
+      ENTITY_BLOCKLIST: ${ENTITY_BLOCKLIST:-}
+      EPSILON_DEFAULT: ${EPSILON_DEFAULT:-0}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
     ports:
       - "${HTTP_PORT:-8080}:8080"
     restart: unless-stopped
+
   adminer:
     image: adminer:5.4.2
     depends_on:
@@ -47,5 +37,6 @@ services:
     environment:
       ADMINER_DEFAULT_SERVER: timescaledb
     restart: unless-stopped
+
 volumes:
   tsdb-data:
