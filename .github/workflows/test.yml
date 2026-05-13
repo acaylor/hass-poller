@@ -50,11 +50,11 @@ jobs:
         run: go test -race -count=1 -coverprofile=coverage.out ./...
 
       - name: Upload coverage profile
-        # actions/upload-artifact@v4 refuses to run on GHES, and Gitea
+        # actions/upload-artifact refuses to run on GHES, and Gitea
         # Actions identifies as GHES. Skip on Gitea; on GitHub it uploads
         # the coverage.out file as a workflow artifact.
         if: github.server_url == 'https://github.com'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage
           path: coverage.out
