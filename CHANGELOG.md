@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-05-12
+
+### Fixed
+
+- Disabled the redundant internal checkout in `golang/govulncheck-action` so tag-triggered release workflows can run on GitHub without duplicate authorization headers. Gitea compatibility is unchanged.
+
 ## [0.1.1] - 2026-05-12
 
 ### Added
