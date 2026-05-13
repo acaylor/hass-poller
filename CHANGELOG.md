@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-05-12
+
+### Changed
+
+- GitHub release notes now include links to the published GHCR container image tags and an example `docker pull` command. Gitea releases remain changelog-only because the container image is GitHub-only.
+- Bumped GitHub Actions to the latest major versions (Renovate `renovate/major-github-actions`): `docker/setup-qemu-action` v3 → v4, `docker/setup-buildx-action` v3 → v4, `docker/login-action` v3 → v4, `docker/metadata-action` v5 → v6, `docker/build-push-action` v6 → v7, and `actions/upload-artifact` v4 → v7.
+
 ## [0.1.2] - 2026-05-12
 
 ### Fixed
