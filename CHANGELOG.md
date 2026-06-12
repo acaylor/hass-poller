@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-06-12
+
+### Security
+
+- Bumped the Go toolchain and Docker builder image to 1.26.4 to pick up security fixes.
+
 ## [0.1.3] - 2026-05-12
 
 ### Changed
