@@ -143,13 +143,13 @@ func TestParseNumericState(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, ok := parseNumericState(tt.raw)
+			got, ok := ParseNumericState(tt.raw)
 			if ok != tt.wantOK {
-				t.Errorf("parseNumericState(%q) ok = %v, want %v", tt.raw, ok, tt.wantOK)
+				t.Errorf("ParseNumericState(%q) ok = %v, want %v", tt.raw, ok, tt.wantOK)
 				return
 			}
 			if ok && got != tt.want {
-				t.Errorf("parseNumericState(%q) = %v, want %v", tt.raw, got, tt.want)
+				t.Errorf("ParseNumericState(%q) = %v, want %v", tt.raw, got, tt.want)
 			}
 		})
 	}

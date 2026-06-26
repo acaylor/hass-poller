@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -19,6 +20,14 @@ type State struct {
 type Attributes struct {
 	UnitOfMeasurement string `json:"unit_of_measurement"`
 	StateClass        string `json:"state_class"`
+}
+
+// HistoryState is a single recorded state change returned by the history API.
+type HistoryState struct {
+	EntityID    string
+	State       string
+	Unit        string
+	LastChanged time.Time
 }
 
 type Client struct {
@@ -38,8 +47,84 @@ func NewClient(baseURL string, token string, timeout time.Duration) *Client {
 }
 
 func (c *Client) FetchStates(ctx context.Context) ([]State, error) {
-	url := c.baseURL + "/api/states"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	resp, err := c.get(ctx, "/api/states")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, statusError("/api/states", resp)
+	}
+
+	var states []State
+	if err := json.NewDecoder(resp.Body).Decode(&states); err != nil {
+		return nil, fmt.Errorf("decode states payload: %w", err)
+	}
+
+	return states, nil
+}
+
+// FetchHistory returns every recorded state change in [start, end] for the
+// given entities. An empty entityIDs returns history for all recorded entities.
+// Results are bounded by Home Assistant's recorder retention (purge_keep_days).
+func (c *Client) FetchHistory(ctx context.Context, start, end time.Time, entityIDs []string) ([]HistoryState, error) {
+	q := url.Values{}
+	q.Set("end_time", end.UTC().Format(time.RFC3339))
+	q.Set("significant_changes_only", "0")
+	if len(entityIDs) > 0 {
+		q.Set("filter_entity_id", strings.Join(entityIDs, ","))
+	}
+
+	path := "/api/history/period/" + url.PathEscape(start.UTC().Format(time.RFC3339)) + "?" + q.Encode()
+	resp, err := c.get(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, statusError("/api/history/period", resp)
+	}
+
+	// The endpoint returns one inner array per entity, ordered chronologically.
+	var raw [][]struct {
+		EntityID    string     `json:"entity_id"`
+		State       string     `json:"state"`
+		Attributes  Attributes `json:"attributes"`
+		LastChanged time.Time  `json:"last_changed"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		return nil, fmt.Errorf("decode history payload: %w", err)
+	}
+
+	var out []HistoryState
+	for _, series := range raw {
+		// With attributes present on every entry the unit is per-row, but older
+		// HA omits attributes after the first entry, so carry the last seen unit.
+		unit := ""
+		entityID := ""
+		for _, e := range series {
+			if e.EntityID != "" {
+				entityID = e.EntityID
+			}
+			if e.Attributes.UnitOfMeasurement != "" {
+				unit = e.Attributes.UnitOfMeasurement
+			}
+			out = append(out, HistoryState{
+				EntityID:    entityID,
+				State:       e.State,
+				Unit:        unit,
+				LastChanged: e.LastChanged,
+			})
+		}
+	}
+
+	return out, nil
+}
+
+func (c *Client) get(ctx context.Context, path string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
@@ -49,19 +134,12 @@ func (c *Client) FetchStates(ctx context.Context) ([]State, error) {
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("request /api/states: %w", err)
+		return nil, fmt.Errorf("request %s: %w", path, err)
 	}
-	defer resp.Body.Close()
+	return resp, nil
+}
 
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("/api/states returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
-	}
-
-	var states []State
-	if err := json.NewDecoder(resp.Body).Decode(&states); err != nil {
-		return nil, fmt.Errorf("decode states payload: %w", err)
-	}
-
-	return states, nil
+func statusError(endpoint string, resp *http.Response) error {
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	return fmt.Errorf("%s returned %d: %s", endpoint, resp.StatusCode, strings.TrimSpace(string(body)))
 }

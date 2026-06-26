@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `backfill` command (`cmd/backfill`) to recover missing data after an outage by
+  replaying Home Assistant recorder history into `ha_numeric`, then refreshing
+  the hourly and daily continuous aggregates for the range. Reuses the poller's
+  config, filtering, numeric parsing, and epsilon change-detection. Supports
+  `-dry-run`, `-replace`, `-no-epsilon`, and `-no-refresh`.
+- `docs/BACKFILL.md` runbook covering gap identification, retention limits,
+  caveats, and running the command from source, Docker, or a Kubernetes Job.
+- `ha.Client.FetchHistory` for reading `GET /api/history/period`, and
+  `store.DeleteRange` / `store.RefreshContinuousAggregates` helpers.
+- The container image now ships the `backfill` binary alongside the poller.
+
 ## [0.1.4] - 2026-06-12
 
 ### Security

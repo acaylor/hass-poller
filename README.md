@@ -129,10 +129,49 @@ gunzip -c backups/warehouse-YYYYMMDD-HHMMSS.sql.gz \
 
 `pg_dump` warnings about circular foreign-key constraints on TimescaleDB's internal catalog tables are expected. For TimescaleDB-aware restores between major versions, see the [official guide](https://docs.timescale.com/self-hosted/latest/backup-and-restore/pg-dump-and-restore/).
 
+## Backfilling after an outage
+
+If the database (or poller) was down, you can repair the gap from Home
+Assistant's own recorder history, which stores every state change independently
+of this service. The `backfill` command reuses the same config and the same
+filtering, numeric-parsing, and epsilon change-detection as the live poller, but
+uses HA's real `last_changed` timestamps (higher fidelity than the once-a-minute
+poll). It is bounded by HA's recorder retention (`purge_keep_days`, default 10
+days); for older gaps use HA long-term statistics instead.
+
+```bash
+# Reuses HA_BASE_URL, HA_TOKEN, PG_DSN, ENTITY_ALLOWLIST/BLOCKLIST, EPSILON_* from the env.
+go run ./cmd/backfill -start 2026-06-20T00:00:00Z -end 2026-06-22T12:00:00Z
+
+# or inside the running stack (the image ships the backfill binary too):
+docker compose exec poller /usr/local/bin/backfill -start 2026-06-20T00:00:00Z -end 2026-06-22T12:00:00Z
+```
+
+| Flag | Description |
+|---|---|
+| `-start` | Gap start, RFC3339 (required) |
+| `-end` | Gap end, RFC3339 (default: now) |
+| `-replace` | Delete existing rows in `[start, end)` before inserting (fails on compressed chunks older than 7 days unless decompressed first) |
+| `-no-epsilon` | Insert every recorded change without epsilon suppression |
+| `-no-refresh` | Skip refreshing the hourly/daily continuous aggregates |
+| `-dry-run` | Fetch and report counts without writing |
+
+After inserting, the command refreshes the `ha_numeric_1h`/`ha_numeric_1d`
+rollups for the range — the automatic policies only cover the last 7 days, so
+backfilled history would otherwise never reach the aggregates. Run `-dry-run`
+first to check the counts. Pick `-start`/`-end` to match the gap precisely;
+`ha_numeric` has no unique key, so overlapping a range the poller already wrote
+will create duplicate rows (use `-replace` to clear the range first).
+
+See [`docs/BACKFILL.md`](docs/BACKFILL.md) for the full runbook: finding the
+gap, retention limits, caveats, and how to run the command from source, Docker,
+or a Kubernetes Job.
+
 ## Documentation
 
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — components, data flow, schema details
 - [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) — build, run, test
+- [`docs/BACKFILL.md`](docs/BACKFILL.md) — recovering missing data after an outage
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — branch naming, PR workflow, release process
 - [`CHANGELOG.md`](CHANGELOG.md) — release notes
 
