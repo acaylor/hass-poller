@@ -177,7 +177,7 @@ func (e *Engine) runCycle(ctx context.Context) error {
 		}
 		matched++
 
-		value, ok := parseNumericState(s.State)
+		value, ok := ParseNumericState(s.State)
 		if !ok {
 			continue
 		}
@@ -227,7 +227,9 @@ func (e *Engine) runCycle(ctx context.Context) error {
 	return nil
 }
 
-func parseNumericState(raw string) (float64, bool) {
+// ParseNumericState converts a Home Assistant state string to a float, rejecting
+// blank, unknown/unavailable, non-numeric, and non-finite values.
+func ParseNumericState(raw string) (float64, bool) {
 	value := strings.TrimSpace(strings.ToLower(raw))
 	if value == "" || value == "unknown" || value == "unavailable" {
 		return 0, false

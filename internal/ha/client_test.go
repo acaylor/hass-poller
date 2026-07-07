@@ -152,3 +152,90 @@ func TestFetchStates_InvalidBaseURL(t *testing.T) {
 		t.Errorf("error %q should mention request construction", err.Error())
 	}
 }
+
+func TestFetchHistory_FlattensSeriesAndCarriesUnit(t *testing.T) {
+	var gotPath, gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		// Two entities; second entity omits attributes on later entries (HA's
+		// minimal-response behaviour) so the unit must carry forward.
+		w.Write([]byte(`[
+			[
+				{"entity_id":"sensor.kitchen_temperature","state":"20.5","attributes":{"unit_of_measurement":"°C"},"last_changed":"2026-06-20T00:00:00Z"},
+				{"entity_id":"sensor.kitchen_temperature","state":"21.0","attributes":{"unit_of_measurement":"°C"},"last_changed":"2026-06-20T00:05:00Z"}
+			],
+			[
+				{"entity_id":"sensor.humidity","state":"40","attributes":{"unit_of_measurement":"%"},"last_changed":"2026-06-20T00:01:00Z"},
+				{"state":"41","attributes":{},"last_changed":"2026-06-20T00:06:00Z"}
+			]
+		]`))
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL, "tok", 2*time.Second)
+	start := time.Date(2026, 6, 20, 0, 0, 0, 0, time.UTC)
+	end := time.Date(2026, 6, 21, 0, 0, 0, 0, time.UTC)
+	hist, err := c.FetchHistory(context.Background(), start, end, []string{"sensor.kitchen_temperature", "sensor.humidity"})
+	if err != nil {
+		t.Fatalf("FetchHistory: %v", err)
+	}
+
+	if gotPath != "/api/history/period/2026-06-20T00:00:00Z" {
+		t.Errorf("path = %q", gotPath)
+	}
+	for _, want := range []string{"end_time=2026-06-21T00", "significant_changes_only=0", "filter_entity_id="} {
+		if !strings.Contains(gotQuery, want) {
+			t.Errorf("query %q should contain %q", gotQuery, want)
+		}
+	}
+
+	if len(hist) != 4 {
+		t.Fatalf("got %d entries, want 4", len(hist))
+	}
+	// Unit carries forward to the attribute-less second humidity entry.
+	last := hist[3]
+	if last.EntityID != "sensor.humidity" || last.State != "41" || last.Unit != "%" {
+		t.Errorf("hist[3] = %+v, want humidity/41/%%", last)
+	}
+	if !hist[0].LastChanged.Equal(time.Date(2026, 6, 20, 0, 0, 0, 0, time.UTC)) {
+		t.Errorf("hist[0].LastChanged = %v", hist[0].LastChanged)
+	}
+}
+
+func TestFetchHistory_OmitsFilterWhenNoEntities(t *testing.T) {
+	var gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
+		w.Write([]byte(`[]`))
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL, "tok", time.Second)
+	start := time.Date(2026, 6, 20, 0, 0, 0, 0, time.UTC)
+	if _, err := c.FetchHistory(context.Background(), start, start.Add(time.Hour), nil); err != nil {
+		t.Fatalf("FetchHistory: %v", err)
+	}
+	if strings.Contains(gotQuery, "filter_entity_id") {
+		t.Errorf("query %q should not contain filter_entity_id when no entities given", gotQuery)
+	}
+}
+
+func TestFetchHistory_Non200ReturnsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"message":"bad token"}`))
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL, "tok", time.Second)
+	start := time.Date(2026, 6, 20, 0, 0, 0, 0, time.UTC)
+	_, err := c.FetchHistory(context.Background(), start, start.Add(time.Hour), nil)
+	if err == nil {
+		t.Fatal("expected error on 401, got nil")
+	}
+	if !strings.Contains(err.Error(), "/api/history/period") {
+		t.Errorf("error %q should mention endpoint", err.Error())
+	}
+}

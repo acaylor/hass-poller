@@ -74,6 +74,42 @@ func (s *Store) InsertMeasurements(ctx context.Context, measurements []Measureme
 	return count, nil
 }
 
+// DeleteRange removes all rows whose ts falls in [start, end). It returns the
+// number of rows deleted. Used by backfill --replace to clear a range before
+// re-inserting. Note: this fails on compressed chunks (older than the
+// compression policy window) unless they are decompressed first.
+func (s *Store) DeleteRange(ctx context.Context, start, end time.Time) (int64, error) {
+	tag, err := s.pool.Exec(ctx,
+		"DELETE FROM ha_numeric WHERE ts >= $1 AND ts < $2", start, end)
+	if err != nil {
+		return 0, fmt.Errorf("delete range: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
+// RefreshContinuousAggregates re-materializes the hourly and daily rollups for
+// [start, end]. Required after backfilling old data, because the automatic
+// refresh policies only cover the recent window (start_offset of 7 days).
+// refresh_continuous_aggregate cannot run inside a transaction, so each call is
+// issued on its own via the pool.
+func (s *Store) RefreshContinuousAggregates(ctx context.Context, start, end time.Time) error {
+	// Procedure names and timestamps are internal/trusted (not user input), and
+	// refresh_continuous_aggregate must run via simple query protocol because it
+	// commits internally and cannot accept bound parameters.
+	for _, view := range []string{"ha_numeric_1h", "ha_numeric_1d"} {
+		sql := fmt.Sprintf(
+			"CALL refresh_continuous_aggregate('%s', '%s'::timestamptz, '%s'::timestamptz)",
+			view,
+			start.UTC().Format(time.RFC3339Nano),
+			end.UTC().Format(time.RFC3339Nano),
+		)
+		if _, err := s.pool.Exec(ctx, sql, pgx.QueryExecModeSimpleProtocol); err != nil {
+			return fmt.Errorf("refresh %s: %w", view, err)
+		}
+	}
+	return nil
+}
+
 func splitSQLStatements(sqlText string) []string {
 	parts := strings.Split(sqlText, ";")
 	stmts := make([]string, 0, len(parts))
