@@ -29,7 +29,7 @@ services:
     restart: unless-stopped
 
   adminer:
-    image: adminer:5.4.2
+    image: adminer:5.5.0
     depends_on:
       - timescaledb
     ports:
