@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-09-04
+
+### Security
+
+- Updated the Go toolchain and Docker builder image from 1.26.4 to 1.27.1,
+  resolving seven reachable standard-library vulnerabilities reported by
+  `govulncheck`.
+- Updated `github.com/prometheus/client_golang` from 1.23.2 to 1.24.1 and
+  refreshed its transitive dependencies, including `golang.org/x/text` from
+  0.29.0 to 0.40.0, resolving GO-2026-5970.
+
+### Changed
+
+- Updated `github.com/jackc/pgx/v5` from 5.9.2 to 5.10.0.
+- Updated the bundled TimescaleDB image from 2.26.4 to 2.29.2.
+- Updated the bundled Adminer image from 5.4.2 to 6.0.1.
+- Updated `actions/checkout` and `actions/setup-go` to v7.
+
 ## [0.2.0] - 2026-07-06
 
 ### Added
