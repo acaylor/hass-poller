@@ -5,8 +5,8 @@ import (
 	"errors"
 	"io"
 	"log"
-	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"hass-poller/internal/filter"
@@ -107,7 +107,7 @@ func TestShouldWrite(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := ShouldWrite(tt.current, tt.last, tt.epsilon, tt.firstObservation)
+			got := ShouldWrite(tt.current, tt.last, tt.epsilon, tt.firstObservation, "", "")
 			if got != tt.want {
 				t.Errorf("ShouldWrite(%v, %v, %v, %v) = %v, want %v",
 					tt.current, tt.last, tt.epsilon, tt.firstObservation, got, tt.want)
@@ -313,128 +313,100 @@ func TestRunCycle_TimestampIsRecent(t *testing.T) {
 	}
 }
 
-func TestTryRunCycle_SkipsWhenCycleAlreadyRunning(t *testing.T) {
-	started := make(chan struct{}, 1)
-	block := make(chan struct{})
-	fetcher := &fakeFetcher{
-		states:  []ha.State{state("sensor.temp", "1", "")},
-		started: started,
-		block:   block,
-	}
-	st := &fakeStore{}
-	e := testEngine(fetcher, st, []string{"sensor.*"}, nil, 0, nil)
-
-	// Kick off cycle 1 in the background; it will block inside FetchStates.
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		e.tryRunCycle(context.Background())
-	}()
-
-	// Wait until cycle 1 has acquired the running lock and entered FetchStates.
-	select {
-	case <-started:
-	case <-time.After(time.Second):
-		t.Fatal("cycle 1 never started")
-	}
-
-	// Cycle 2: should bail immediately because the mutex is held.
-	e.tryRunCycle(context.Background())
-	if got := fetcher.Calls(); got != 1 {
-		t.Errorf("FetchStates called %d times, want 1 (second call should bail)", got)
-	}
-
-	// Release cycle 1 and let it finish.
-	close(block)
-	wg.Wait()
-
-	if got := fetcher.Calls(); got != 1 {
-		t.Errorf("after release, FetchStates calls = %d, want 1", got)
-	}
-	if n := len(st.LastBatch()); n != 1 {
-		t.Errorf("cycle 1 should have inserted 1 row, got %d", n)
-	}
-}
-
-func TestRun_ReturnsOnContextCancel(t *testing.T) {
-	fetcher := &fakeFetcher{states: []ha.State{state("sensor.temp", "1", "")}}
-	st := &fakeStore{}
-	e := testEngine(fetcher, st, []string{"sensor.*"}, nil, 0, nil)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() {
-		done <- e.Run(ctx)
-	}()
-
-	// Wait for the immediate first cycle to complete, then cancel.
-	deadline := time.Now().Add(time.Second)
-	for fetcher.Calls() == 0 && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-	}
-	cancel()
-
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Errorf("Run returned err = %v, want nil", err)
+func TestRun_ImmediateAlignedPollingAndCancellation(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		time.Sleep(10 * time.Second) // Start away from a minute boundary.
+		fetcher := &fakeFetcher{states: []ha.State{state("sensor.temp", "1", "")}}
+		e := testEngine(fetcher, &fakeStore{}, nil, nil, 0, nil)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		done := make(chan struct{})
+		go func() { e.Run(ctx); close(done) }()
+		synctest.Wait()
+		if fetcher.calls.Load() != 1 {
+			t.Fatalf("expected immediate poll, got %d calls", fetcher.calls.Load())
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("Run did not return after context cancel")
+		time.Sleep(49 * time.Second)
+		synctest.Wait()
+		if fetcher.calls.Load() != 1 {
+			t.Fatal("polled before the interval boundary")
+		}
+		time.Sleep(time.Second)
+		synctest.Wait()
+		if fetcher.calls.Load() != 2 {
+			t.Fatalf("expected poll at minute boundary, got %d calls", fetcher.calls.Load())
+		}
+		cancel()
+		synctest.Wait()
+		select {
+		case <-done:
+		default:
+			t.Fatal("Run did not return after cancellation")
+		}
+	})
+}
+
+func TestRunCycle_RetriesFailedWrites(t *testing.T) {
+	for _, initial := range []string{"", "19"} {
+		t.Run("previous value="+initial, func(t *testing.T) {
+			fetcher := &fakeFetcher{states: []ha.State{state("sensor.temp", initial, "°C")}}
+			st := &fakeStore{}
+			e := testEngine(fetcher, st, []string{"sensor.*"}, nil, 0, nil)
+			if err := e.runCycle(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			lastPoll := e.LastSuccessfulPoll()
+			fetcher.states = []ha.State{state("sensor.temp", "20", "°C")}
+			st.insertErr = errors.New("database unavailable")
+			if err := e.runCycle(context.Background()); !errors.Is(err, st.insertErr) {
+				t.Fatalf("got %v", err)
+			}
+			if !e.LastSuccessfulPoll().Equal(lastPoll) {
+				t.Fatal("failed insert advanced last poll")
+			}
+			st.insertErr = nil
+			if err := e.runCycle(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			batch := st.LastBatch()
+			if len(batch) != 1 || batch[0].Value != 20 {
+				t.Fatalf("failed write was not retried: %+v", batch)
+			}
+			if err := e.runCycle(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if len(st.LastBatch()) != 0 {
+				t.Fatal("successful retry should suppress unchanged values")
+			}
+		})
 	}
 }
 
-func TestTryRunCycle_LogsAndCountsErrors(t *testing.T) {
-	// tryRunCycle is the only entry that swallows runCycle errors. Exercise both
-	// the error and success branches to make sure neither panics and that the
-	// running mutex is released either way.
-	fetcher := &fakeFetcher{err: errors.New("boom")}
+func TestRunCycle_UnitChangeWritesUnchangedValue(t *testing.T) {
+	fetcher := &fakeFetcher{states: []ha.State{state("sensor.temp", "20", "°C")}}
 	st := &fakeStore{}
-	e := testEngine(fetcher, st, []string{"sensor.*"}, nil, 0, nil)
-
-	e.tryRunCycle(context.Background()) // error branch
-	e.tryRunCycle(context.Background()) // mutex must have been released
-
-	if fetcher.Calls() != 2 {
-		t.Errorf("FetchStates called %d times, want 2 (mutex must release on error)", fetcher.Calls())
+	e := testEngine(fetcher, st, nil, nil, 1, nil)
+	for _, unit := range []string{"°C", "°F", ""} {
+		fetcher.states = []ha.State{state("sensor.temp", "20", unit)}
+		if err := e.runCycle(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		batch := st.LastBatch()
+		if len(batch) != 1 || batch[0].Unit != unit {
+			t.Fatalf("unit change lost: %+v", batch)
+		}
 	}
 }
 
-func TestRun_TickInvokesAdditionalCycles(t *testing.T) {
-	fetcher := &fakeFetcher{states: []ha.State{state("sensor.temp", "1", "")}}
-	st := &fakeStore{}
-	e := New(
-		fetcher,
-		filter.NewGlobFilter([]string{"sensor.*"}, nil),
-		st,
-		20*time.Millisecond, // short interval so the ticker branch fires
-		0, nil,
-		log.New(io.Discard, "", 0),
-	)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel()
-
-	done := make(chan error, 1)
-	go func() { done <- e.Run(ctx) }()
-
-	<-done
-	if fetcher.Calls() < 2 {
-		t.Errorf("FetchStates calls = %d, want >= 2 (immediate + at least one tick)", fetcher.Calls())
-	}
-}
-
-func TestDBHealthy_DelegatesToStore(t *testing.T) {
-	st := &fakeStore{healthy: true}
-	e := testEngine(&fakeFetcher{}, st, []string{"sensor.*"}, nil, 0, nil)
-	if !e.DBHealthy(context.Background()) {
-		t.Error("DBHealthy = false, want true")
-	}
-
-	st2 := &fakeStore{healthy: false}
-	e2 := testEngine(&fakeFetcher{}, st2, []string{"sensor.*"}, nil, 0, nil)
-	if e2.DBHealthy(context.Background()) {
-		t.Error("DBHealthy = true, want false")
+func TestShouldWrite_UnitChanges(t *testing.T) {
+	for _, tt := range []struct {
+		current, last string
+		want          bool
+	}{
+		{"°C", "°C", false}, {"°F", "°C", true}, {"", "°C", true}, {"°C", "", true},
+	} {
+		if got := ShouldWrite(20, 20, 1, false, tt.current, tt.last); got != tt.want {
+			t.Errorf("unit %q -> %q: got %v, want %v", tt.last, tt.current, got, tt.want)
+		}
 	}
 }

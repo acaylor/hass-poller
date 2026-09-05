@@ -27,7 +27,7 @@ rows it writes are consistent with what the poller produces. The differences:
   changes.
 - **Aggregate refresh.** After inserting, it calls
   `refresh_continuous_aggregate` on `ha_numeric_1h` and `ha_numeric_1d` for the
-  range. The automatic refresh policies only cover the recent window
+  full hourly and daily buckets touched by the range. The automatic refresh policies only cover the recent window
   (`start_offset` of 7 days), so backfilled history would otherwise never reach
   the rollups.
 
@@ -112,9 +112,12 @@ Re-run the per-hour query from step 1 — the gap hours should now be populated 
 and confirm the rollups were refreshed:
 
 ```sql
-SELECT count(*) FROM ha_numeric_1h WHERE bucket >= 'START' AND bucket < 'END';
-SELECT count(*) FROM ha_numeric_1d WHERE bucket >= 'START' AND bucket < 'END';
+SELECT count(*) FROM ha_numeric_1h WHERE bucket >= time_bucket('1 hour', 'START'::timestamptz) AND bucket < 'END';
+SELECT count(*) FROM ha_numeric_1d WHERE bucket >= time_bucket('1 day', 'START'::timestamptz) AND bucket < 'END';
 ```
+
+Refresh windows expand to complete UTC buckets because TimescaleDB excludes partial
+buckets from a refresh. See the [TimescaleDB refresh API](https://github.com/timescale/docs/blob/latest/api/continuous-aggregates/refresh_continuous_aggregate.md).
 
 ## Flags
 
@@ -122,7 +125,7 @@ SELECT count(*) FROM ha_numeric_1d WHERE bucket >= 'START' AND bucket < 'END';
 |---|---|
 | `-start` | Gap start, RFC3339 (required) |
 | `-end` | Gap end, RFC3339 (default: now) |
-| `-replace` | Delete existing rows in `[start, end)` before inserting |
+| `-replace` | Atomically replace rows in `[start, end)` for entities with replacement data |
 | `-no-epsilon` | Insert every recorded change without epsilon suppression |
 | `-no-refresh` | Skip refreshing the continuous aggregates |
 | `-dry-run` | Fetch and report counts without writing |
@@ -189,7 +192,10 @@ spec:
   Assistant's recorder (`purge_keep_days`, default 10 days). Check it first.
 - **No unique key.** `ha_numeric` has no unique constraint, so overlapping a
   range the poller already wrote will create **duplicate rows**. Scope `-start`/
-  `-end` strictly inside the gap, or use `-replace` to clear the range first.
+  `-end` strictly inside the gap, or use `-replace` to replace those entities atomically.
+- **Replacement scope.** `-replace` deletes and inserts in one transaction.
+  An insert failure rolls back the deletion. Entities excluded by the filters
+  or with no numeric replacement rows are left untouched.
 - **Compression.** TimescaleDB compresses chunks older than the compression
   policy window (default 7 days). Inserting into — or `-replace`-deleting from —
   a compressed chunk may fail unless you `decompress_chunk()` it first. Recent

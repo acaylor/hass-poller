@@ -3,9 +3,9 @@ package httpserver
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 )
@@ -54,7 +54,7 @@ func TestHandleHealth(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			s := New(":0", tt.checker)
+			s := New(":0", tt.checker, time.Minute)
 			req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 			rec := httptest.NewRecorder()
 
@@ -84,7 +84,7 @@ func TestHandleHealth(t *testing.T) {
 }
 
 func TestServer_MetricsEndpoint(t *testing.T) {
-	s := New(":0", stubChecker{lastPoll: time.Now(), dbOK: true})
+	s := New(":0", stubChecker{lastPoll: time.Now(), dbOK: true}, time.Minute)
 
 	ts := httptest.NewServer(s.srv.Handler)
 	defer ts.Close()
@@ -100,52 +100,28 @@ func TestServer_MetricsEndpoint(t *testing.T) {
 	}
 }
 
-func TestServer_ListenAndServeAndShutdown(t *testing.T) {
-	s := New("127.0.0.1:0", stubChecker{lastPoll: time.Now(), dbOK: true})
-
-	// Replace the listener-bound server with one we can drive directly.
-	ts := httptest.NewServer(s.srv.Handler)
-	defer ts.Close()
-
-	resp, err := http.Get(ts.URL + "/healthz")
-	if err != nil {
-		t.Fatalf("GET /healthz: %v", err)
-	}
-	resp.Body.Close()
-
-	// Exercise Shutdown path on a server that hasn't started — it should not error.
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	if err := s.Shutdown(ctx); err != nil {
-		t.Errorf("Shutdown returned: %v", err)
-	}
-
-	// ListenAndServe on the (now shutdown) server should return ErrServerClosed.
-	err = s.ListenAndServe()
-	if err == nil || !strings.Contains(err.Error(), "Server closed") {
-		t.Errorf("ListenAndServe after Shutdown = %v, want ErrServerClosed", err)
+func TestHandleHealth_LongPollInterval(t *testing.T) {
+	for _, age := range []time.Duration{4 * time.Minute, 11 * time.Minute} {
+		s := New(":0", stubChecker{lastPoll: time.Now().Add(-age), dbOK: true}, 5*time.Minute)
+		rec := httptest.NewRecorder()
+		s.srv.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+		want := http.StatusOK
+		if age > 10*time.Minute {
+			want = http.StatusServiceUnavailable
+		}
+		if rec.Code != want {
+			t.Fatalf("poll age %s: status %d, want %d", age, rec.Code, want)
+		}
 	}
 }
 
-func TestAtomicTime_StoreLoad(t *testing.T) {
-	var at AtomicTime
-
-	// Zero value: Load() before any Store() returns zero Time.
-	if got := at.Load(); !got.IsZero() {
-		t.Errorf("Load() on fresh AtomicTime = %v, want zero time", got)
-	}
-
-	now := time.Unix(1_700_000_000, 12345).UTC()
-	at.Store(now)
-	got := at.Load()
-	if !got.Equal(now) {
-		t.Errorf("Load() = %v, want %v", got, now)
-	}
-
-	// Overwrite.
-	later := now.Add(time.Hour)
-	at.Store(later)
-	if got := at.Load(); !got.Equal(later) {
-		t.Errorf("Load() after second Store = %v, want %v", got, later)
+func TestHandleHealth_OverflowingPollInterval(t *testing.T) {
+	for _, interval := range []time.Duration{time.Duration(math.MaxInt64)/2 + 1, time.Duration(math.MaxInt64)} {
+		s := New(":0", stubChecker{lastPoll: time.Now().Add(-time.Hour), dbOK: true}, interval)
+		rec := httptest.NewRecorder()
+		s.srv.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+		if rec.Code != http.StatusOK {
+			t.Errorf("interval %s: status %d, want 200", interval, rec.Code)
+		}
 	}
 }

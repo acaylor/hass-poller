@@ -10,7 +10,7 @@ A small Go service that polls Home Assistant every minute, extracts numeric sens
 - Batch inserts via `pgx.CopyFrom` for efficient writes
 - TimescaleDB compression (7 days) and tiered retention: raw 90 days, hourly 1 year, daily kept forever
 - Prometheus metrics at `/metrics` and health check at `/healthz`
-- Graceful shutdown with in-flight write flush
+- Signal-driven cancellation and HTTP server shutdown
 - Single binary, distroless Docker image
 
 ## Quick start
@@ -55,7 +55,10 @@ All configuration is via environment variables:
 | `EPSILON_DEFAULT` | No | `0` | Minimum change threshold to trigger a write |
 | `HTTP_LISTEN_ADDR` | No | `:8080` | Address for health/metrics HTTP server |
 | `CONFIG_FILE` | No | _(empty)_ | Path to YAML config file for per-entity epsilon overrides |
-| `LOG_LEVEL` | No | `info` | Log verbosity |
+
+Durations must be positive. Epsilon values must be finite and non-negative. Invalid
+durations, epsilon values, and glob patterns cause a startup error; empty values
+use defaults.
 
 ### Entity filtering
 
@@ -85,7 +88,7 @@ CONFIG_FILE=/etc/hapoller/config.yaml
 
 | Path | Description |
 |---|---|
-| `/healthz` | Returns 200 if last poll was within 2 minutes and DB is reachable |
+| `/healthz` | Returns 200 if the last successful poll is within `max(2 minutes, 2 × POLL_INTERVAL)` and DB is reachable |
 | `/metrics` | Prometheus metrics (`hapoller_poll_total`, `hapoller_cycle_duration_seconds`, `hapoller_rows_inserted_total`, `hapoller_entities_seen`, `hapoller_entities_skipped`) |
 
 ## Grafana queries
@@ -151,17 +154,17 @@ docker compose exec poller /usr/local/bin/backfill -start 2026-06-20T00:00:00Z -
 |---|---|
 | `-start` | Gap start, RFC3339 (required) |
 | `-end` | Gap end, RFC3339 (default: now) |
-| `-replace` | Delete existing rows in `[start, end)` before inserting (fails on compressed chunks older than 7 days unless decompressed first) |
+| `-replace` | Atomically replace rows in `[start, end)` for entities with replacement data |
 | `-no-epsilon` | Insert every recorded change without epsilon suppression |
 | `-no-refresh` | Skip refreshing the hourly/daily continuous aggregates |
 | `-dry-run` | Fetch and report counts without writing |
 
 After inserting, the command refreshes the `ha_numeric_1h`/`ha_numeric_1d`
-rollups for the range — the automatic policies only cover the last 7 days, so
+rollups for all hourly and daily buckets touched by the range — the automatic policies only cover the last 7 days, so
 backfilled history would otherwise never reach the aggregates. Run `-dry-run`
 first to check the counts. Pick `-start`/`-end` to match the gap precisely;
 `ha_numeric` has no unique key, so overlapping a range the poller already wrote
-will create duplicate rows (use `-replace` to clear the range first).
+will create duplicate rows (use `-replace` to replace those entities atomically).
 
 See [`docs/BACKFILL.md`](docs/BACKFILL.md) for the full runbook: finding the
 gap, retention limits, caveats, and how to run the command from source, Docker,

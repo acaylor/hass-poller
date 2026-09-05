@@ -1,29 +1,5 @@
-// Command backfill repairs gaps in the ha_numeric table after an outage by
-// pulling recorded state changes from Home Assistant's history API and writing
-// them to TimescaleDB.
-//
-// It reuses the same configuration (HA_BASE_URL, HA_TOKEN, PG_DSN,
-// ENTITY_ALLOWLIST/BLOCKLIST, EPSILON_*) and the same filtering, numeric
-// parsing, and change-detection logic as the live poller, so backfilled rows
-// match what the poller would have written — except the timestamps come from
-// Home Assistant's real last_changed, which is higher fidelity than the
-// poller's once-a-minute snapshots.
-//
-// The history source is bounded by HA's recorder retention (purge_keep_days,
-// default 10 days). For gaps older than that, use long-term statistics instead.
-//
-// Usage:
-//
-//	backfill -start 2026-06-20T00:00:00Z -end 2026-06-22T12:00:00Z [flags]
-//
-// Flags:
-//
-//	-start       gap start, RFC3339 (required)
-//	-end         gap end, RFC3339 (default: now)
-//	-replace     delete existing rows in [start,end) before inserting
-//	-no-epsilon  insert every recorded change without epsilon suppression
-//	-no-refresh  skip refreshing the hourly/daily continuous aggregates
-//	-dry-run     fetch and report counts without writing
+// Command backfill repairs gaps in ha_numeric using Home Assistant recorder
+// history. See docs/BACKFILL.md for usage and retention limits.
 package main
 
 import (
@@ -31,7 +7,9 @@ import (
 	"flag"
 	"log"
 	"os"
+	"os/signal"
 	"sort"
+	"syscall"
 	"time"
 
 	"hass-poller/internal/config"
@@ -46,7 +24,7 @@ func main() {
 
 	startFlag := flag.String("start", "", "gap start time, RFC3339 (required)")
 	endFlag := flag.String("end", "", "gap end time, RFC3339 (default: now)")
-	replace := flag.Bool("replace", false, "delete existing rows in [start,end) before inserting")
+	replace := flag.Bool("replace", false, "atomically replace rows in [start,end) for entities with replacement data")
 	noEpsilon := flag.Bool("no-epsilon", false, "insert every recorded change without epsilon suppression")
 	noRefresh := flag.Bool("no-refresh", false, "skip refreshing continuous aggregates")
 	dryRun := flag.Bool("dry-run", false, "fetch and report counts without writing")
@@ -74,17 +52,11 @@ func main() {
 		logger.Fatalf("load config: %v", err)
 	}
 
-	ctx, stop := context.WithCancel(context.Background())
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	haClient := ha.NewClient(cfg.HABaseURL, cfg.HAToken, cfg.HTTPTimeout)
 	entityFilter := filter.NewGlobFilter(cfg.EntityAllowlist, cfg.EntityBlocklist)
-
-	db, err := store.New(ctx, cfg.PGDSN)
-	if err != nil {
-		logger.Fatalf("connect to postgres: %v", err)
-	}
-	defer db.Close()
 
 	// HA's history API requires an explicit filter_entity_id, so enumerate the
 	// current entities and keep the ones matching the same glob filter the poller
@@ -140,15 +112,18 @@ func main() {
 		return
 	}
 
-	if *replace {
-		deleted, err := db.DeleteRange(ctx, start, end)
-		if err != nil {
-			logger.Fatalf("delete existing range: %v", err)
-		}
-		logger.Printf("deleted %d existing rows in range", deleted)
+	db, err := store.New(ctx, cfg.PGDSN)
+	if err != nil {
+		logger.Fatalf("connect to postgres: %v", err)
 	}
+	defer db.Close()
 
-	inserted, err := db.InsertMeasurements(ctx, measurements)
+	var inserted int64
+	if *replace {
+		inserted, err = db.ReplaceMeasurements(ctx, start, end, measurements)
+	} else {
+		inserted, err = db.InsertMeasurements(ctx, measurements)
+	}
 	if err != nil {
 		logger.Fatalf("insert measurements: %v", err)
 	}
@@ -186,7 +161,7 @@ func buildMeasurements(
 
 	var out []store.Measurement
 	for entityID, series := range byEntity {
-		sort.Slice(series, func(i, j int) bool {
+		sort.SliceStable(series, func(i, j int) bool {
 			return series[i].LastChanged.Before(series[j].LastChanged)
 		})
 
@@ -196,22 +171,26 @@ func buildMeasurements(
 		}
 
 		var last float64
+		var lastUnit string
 		first := true
+		var previous ha.HistoryState
 		for _, h := range series {
+			ts := h.LastChanged.UTC()
+			if ts.Before(start) || !ts.Before(end) || h == previous {
+				continue
+			}
+			previous = h
 			value, ok := engine.ParseNumericState(h.State)
 			if !ok {
 				continue
 			}
-			if !noEpsilon && !engine.ShouldWrite(value, last, eps, first) {
+			if !noEpsilon && !engine.ShouldWrite(value, last, eps, first, h.Unit, lastUnit) {
 				continue
 			}
 			last = value
+			lastUnit = h.Unit
 			first = false
 
-			ts := h.LastChanged.UTC()
-			if ts.Before(start) || !ts.Before(end) {
-				continue
-			}
 			out = append(out, store.Measurement{
 				Timestamp: ts,
 				EntityID:  entityID,

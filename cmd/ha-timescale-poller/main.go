@@ -45,7 +45,7 @@ func main() {
 	poller := engine.New(haClient, entityFilter, db, cfg.PollInterval, cfg.EpsilonDefault, cfg.EpsilonOverrides, logger)
 
 	// Start HTTP server for health and metrics.
-	httpSrv := httpserver.New(cfg.HTTPListenAddr, poller)
+	httpSrv := httpserver.New(cfg.HTTPListenAddr, poller, cfg.PollInterval)
 	go func() {
 		logger.Printf("http server listening on %s", cfg.HTTPListenAddr)
 		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -54,11 +54,9 @@ func main() {
 	}()
 
 	// Run the poll loop (blocks until ctx is cancelled).
-	if err := poller.Run(ctx); err != nil {
-		logger.Printf("poller stopped: %v", err)
-	}
+	poller.Run(ctx)
 
-	// Graceful shutdown: give in-flight work 5s to complete.
+	// Allow active health and metrics requests up to 5s to complete.
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 

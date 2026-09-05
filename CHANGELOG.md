@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Keep the last-written cache unchanged on failed database inserts so later polls retry.
+- Record unit changes even when the numeric value is unchanged, including removal of a unit.
+- Make backfill replacement transactional and limit deletion to entities with replacement rows.
+- Refresh complete hourly and daily buckets at backfill boundaries.
+- Preserve fractional history request timestamps; reject empty history entity filters.
+- Ignore out-of-range history before epsilon comparison and suppress duplicate boundary records.
+- Scale health freshness to the poll interval, with a two-minute minimum and
+  overflow protection for very large durations.
+- Reject invalid durations, epsilon values, and glob patterns instead of silently using defaults.
+- Keep the default allowlist when a CSV setting contains only commas and whitespace.
+- Make the entities-seen gauge count all fetched entities, as its description promises.
+
+### Changed
+
+- Remove the redundant poll overlap mutex, custom atomic-time wrapper, and tests of wrapper behavior.
+- Share streaming row encoding between normal and replacement inserts.
+- Share unit-aware epsilon decisions between polling and backfill.
+- Cancel backfill on SIGINT/SIGTERM and defer database setup until a write is needed.
+- Remove the unimplemented `LOG_LEVEL` setting and correct shutdown documentation.
+
 ## [0.2.1] - 2026-09-04
 
 ### Security

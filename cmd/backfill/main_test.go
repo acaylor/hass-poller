@@ -75,3 +75,21 @@ func TestBuildMeasurements_EpsilonOverrideAndNoEpsilon(t *testing.T) {
 		t.Fatalf("no-epsilon: got %d, want 3 (every change)", len(noEps))
 	}
 }
+
+func TestBuildMeasurements_RangeAndDuplicateBoundaries(t *testing.T) {
+	start := ts("2026-06-20T00:00:00Z")
+	end := start.Add(24 * time.Hour)
+	first := ha.HistoryState{EntityID: "sensor.temp", State: "20", Unit: "°C", LastChanged: start}
+	history := []ha.HistoryState{
+		{EntityID: "sensor.temp", State: "20", Unit: "°C", LastChanged: start.Add(-time.Hour)},
+		first, first, // Repeated boundary record from adjacent history requests.
+		{EntityID: "sensor.temp", State: "20", Unit: "°F", LastChanged: start.Add(time.Hour)},
+		{EntityID: "sensor.temp", State: "21", Unit: "°F", LastChanged: end},
+	}
+	for _, noEpsilon := range []bool{false, true} {
+		got := buildMeasurements(history, filter.NewGlobFilter(nil, nil), start, end, config.Config{}, noEpsilon)
+		if len(got) != 2 || !got[0].Timestamp.Equal(start) || got[1].Unit != "°F" {
+			t.Fatalf("no-epsilon=%v: got %+v, want first in-range row and unit change", noEpsilon, got)
+		}
+	}
+}

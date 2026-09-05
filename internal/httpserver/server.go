@@ -3,8 +3,8 @@ package httpserver
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"net/http"
-	"sync/atomic"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -22,10 +22,15 @@ type Server struct {
 	maxAge  time.Duration
 }
 
-func New(addr string, checker HealthChecker) *Server {
+func New(addr string, checker HealthChecker, pollInterval time.Duration) *Server {
+	// Saturate rather than wrap when doubling a very large valid duration.
+	maxAge := time.Duration(math.MaxInt64)
+	if pollInterval <= time.Duration(math.MaxInt64)/2 {
+		maxAge = max(2*time.Minute, 2*pollInterval)
+	}
 	s := &Server{
 		checker: checker,
-		maxAge:  2 * time.Minute,
+		maxAge:  maxAge,
 	}
 
 	mux := http.NewServeMux()
@@ -70,21 +75,4 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"db_ok":     dbOK,
 		"last_poll": lastPoll,
 	})
-}
-
-// AtomicTime is a concurrency-safe time value for tracking last successful poll.
-type AtomicTime struct {
-	val atomic.Int64
-}
-
-func (t *AtomicTime) Store(ts time.Time) {
-	t.val.Store(ts.UnixNano())
-}
-
-func (t *AtomicTime) Load() time.Time {
-	n := t.val.Load()
-	if n == 0 {
-		return time.Time{}
-	}
-	return time.Unix(0, n)
 }

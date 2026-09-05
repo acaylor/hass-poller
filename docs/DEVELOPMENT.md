@@ -4,7 +4,7 @@ This document covers building, running, and testing `hass-poller` locally.
 
 ## Prerequisites
 
-- Go 1.22+ (the toolchain version is pinned in `go.mod`)
+- Go matching the version in `go.mod`
 - Docker + Docker Compose (for the bundled TimescaleDB instance)
 - A Home Assistant instance with a [long-lived access token](https://www.home-assistant.io/docs/authentication/#your-account-profile)
 
@@ -75,7 +75,7 @@ WantedBy=multi-user.target
 go test ./...
 ```
 
-Tests are pure-Go and do not require a running database — the store package uses a fake pool for unit coverage. End-to-end verification against a real TimescaleDB happens via `docker compose up` and the `/healthz` and `/metrics` endpoints.
+Tests are pure-Go and do not require a running database — store tests use a fake transaction to check replacement scope, rollback paths, and row encoding. These do not validate SQL execution or TimescaleDB compression and aggregate behavior. Use a disposable TimescaleDB instance for integration checks; `/healthz` alone only checks poll freshness and database reachability.
 
 ## Editing the architecture diagram
 
