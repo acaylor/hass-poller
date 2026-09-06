@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-09-05
+
 ### Fixed
 
 - Keep the last-written cache unchanged on failed database inserts so later polls retry.
