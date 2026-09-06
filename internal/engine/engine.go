@@ -6,7 +6,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
-	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -14,7 +14,6 @@ import (
 
 	"hass-poller/internal/filter"
 	"hass-poller/internal/ha"
-	"hass-poller/internal/httpserver"
 	"hass-poller/internal/store"
 )
 
@@ -62,10 +61,10 @@ type entityState struct {
 	unit  string
 }
 
-// ShouldWrite determines if a measurement should be written based on epsilon change detection.
-// Returns true for first observations or when the value has changed beyond the epsilon threshold.
-func ShouldWrite(current, last float64, epsilon float64, firstObservation bool) bool {
-	if firstObservation {
+// ShouldWrite reports whether this is a first observation, a unit change, or
+// a numeric change beyond epsilon.
+func ShouldWrite(current, last, epsilon float64, firstObservation bool, currentUnit, lastUnit string) bool {
+	if firstObservation || currentUnit != lastUnit {
 		return true
 	}
 	return math.Abs(current-last) > epsilon
@@ -80,8 +79,7 @@ type Engine struct {
 	epsilonDefault   float64
 	epsilonOverrides map[string]float64
 	state            map[string]entityState
-	lastPoll         httpserver.AtomicTime
-	running          sync.Mutex
+	lastPoll         atomic.Pointer[time.Time]
 }
 
 func New(
@@ -114,7 +112,10 @@ func (e *Engine) epsilonFor(entityID string) float64 {
 
 // LastSuccessfulPoll returns the time of the last successful poll (implements HealthChecker).
 func (e *Engine) LastSuccessfulPoll() time.Time {
-	return e.lastPoll.Load()
+	if last := e.lastPoll.Load(); last != nil {
+		return *last
+	}
+	return time.Time{}
 }
 
 // DBHealthy checks if the database connection is healthy (implements HealthChecker).
@@ -122,32 +123,26 @@ func (e *Engine) DBHealthy(ctx context.Context) bool {
 	return e.store.Healthy(ctx)
 }
 
-func (e *Engine) Run(ctx context.Context) error {
+func (e *Engine) Run(ctx context.Context) {
 	// Run first cycle immediately.
-	e.tryRunCycle(ctx)
+	e.poll(ctx)
 
 	for {
-		// Align to next minute boundary.
+		// Align to the next poll interval boundary.
 		now := time.Now()
 		next := now.Truncate(e.pollInterval).Add(e.pollInterval)
 		delay := time.Until(next)
 
 		select {
 		case <-ctx.Done():
-			return nil
+			return
 		case <-time.After(delay):
-			e.tryRunCycle(ctx)
+			e.poll(ctx)
 		}
 	}
 }
 
-func (e *Engine) tryRunCycle(ctx context.Context) {
-	if !e.running.TryLock() {
-		e.logger.Printf("skipping poll cycle: previous cycle still running")
-		return
-	}
-	defer e.running.Unlock()
-
+func (e *Engine) poll(ctx context.Context) {
 	if err := e.runCycle(ctx); err != nil {
 		e.logger.Printf("poll cycle failed: %v", err)
 		pollTotal.WithLabelValues("error").Inc()
@@ -185,12 +180,10 @@ func (e *Engine) runCycle(ctx context.Context) error {
 
 		last, exists := e.state[s.EntityID]
 		eps := e.epsilonFor(s.EntityID)
-		if !ShouldWrite(value, last.value, eps, !exists) {
+		if !ShouldWrite(value, last.value, eps, !exists, s.Attributes.UnitOfMeasurement, last.unit) {
 			skipped++
 			continue
 		}
-
-		e.state[s.EntityID] = entityState{value: value, unit: s.Attributes.UnitOfMeasurement}
 
 		measurements = append(measurements, store.Measurement{
 			Timestamp: ts,
@@ -205,14 +198,20 @@ func (e *Engine) runCycle(ctx context.Context) error {
 		return err
 	}
 
+	// Only committed measurements may suppress future writes.
+	for _, m := range measurements {
+		e.state[m.EntityID] = entityState{value: m.Value, unit: m.Unit}
+	}
+
 	duration := time.Since(started)
 
 	// Update metrics.
 	cycleDuration.Observe(duration.Seconds())
 	rowsInserted.Add(float64(inserted))
-	entitiesSeen.Set(float64(numeric))
+	entitiesSeen.Set(float64(seen))
 	entitiesSkipped.Set(float64(skipped))
-	e.lastPoll.Store(time.Now())
+	now := time.Now()
+	e.lastPoll.Store(&now)
 
 	e.logger.Printf(
 		"poll complete duration=%s seen=%d matched=%d numeric=%d skipped=%d inserted=%d",
@@ -230,12 +229,7 @@ func (e *Engine) runCycle(ctx context.Context) error {
 // ParseNumericState converts a Home Assistant state string to a float, rejecting
 // blank, unknown/unavailable, non-numeric, and non-finite values.
 func ParseNumericState(raw string) (float64, bool) {
-	value := strings.TrimSpace(strings.ToLower(raw))
-	if value == "" || value == "unknown" || value == "unavailable" {
-		return 0, false
-	}
-
-	parsed, err := strconv.ParseFloat(value, 64)
+	parsed, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
 	if err != nil {
 		return 0, false
 	}

@@ -2,7 +2,9 @@ package config
 
 import (
 	"fmt"
+	"math"
 	"os"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -28,11 +30,8 @@ func Load() (Config, error) {
 		HABaseURL:       strings.TrimSpace(os.Getenv("HA_BASE_URL")),
 		HAToken:         strings.TrimSpace(os.Getenv("HA_TOKEN")),
 		PGDSN:           strings.TrimSpace(os.Getenv("PG_DSN")),
-		PollInterval:    parseDurationWithDefault("POLL_INTERVAL", time.Minute),
-		HTTPTimeout:     parseDurationWithDefault("HTTP_TIMEOUT", 10*time.Second),
 		EntityAllowlist: splitCSVWithDefault(os.Getenv("ENTITY_ALLOWLIST"), []string{"sensor.*"}),
 		EntityBlocklist: splitCSVWithDefault(os.Getenv("ENTITY_BLOCKLIST"), nil),
-		EpsilonDefault:  parseFloatWithDefault("EPSILON_DEFAULT", 0),
 		HTTPListenAddr:  stringWithDefault(os.Getenv("HTTP_LISTEN_ADDR"), ":8080"),
 	}
 
@@ -45,8 +44,30 @@ func Load() (Config, error) {
 	if cfg.PGDSN == "" {
 		return Config{}, fmt.Errorf("PG_DSN is required")
 	}
-	if cfg.PollInterval <= 0 {
-		return Config{}, fmt.Errorf("POLL_INTERVAL must be > 0")
+	var err error
+	if cfg.PollInterval, err = durationFromEnv("POLL_INTERVAL", time.Minute); err != nil {
+		return Config{}, err
+	}
+	if cfg.HTTPTimeout, err = durationFromEnv("HTTP_TIMEOUT", 10*time.Second); err != nil {
+		return Config{}, err
+	}
+	if raw := strings.TrimSpace(os.Getenv("EPSILON_DEFAULT")); raw != "" {
+		cfg.EpsilonDefault, err = strconv.ParseFloat(raw, 64)
+		if err != nil {
+			return Config{}, fmt.Errorf("EPSILON_DEFAULT: %w", err)
+		}
+	}
+	if err := validateEpsilon("EPSILON_DEFAULT", cfg.EpsilonDefault); err != nil {
+		return Config{}, err
+	}
+	for key, patterns := range map[string][]string{
+		"ENTITY_ALLOWLIST": cfg.EntityAllowlist, "ENTITY_BLOCKLIST": cfg.EntityBlocklist,
+	} {
+		for _, pattern := range patterns {
+			if _, err := path.Match(pattern, ""); err != nil {
+				return Config{}, fmt.Errorf("%s: invalid glob %q: %w", key, pattern, err)
+			}
+		}
 	}
 
 	if configFile := strings.TrimSpace(os.Getenv("CONFIG_FILE")); configFile != "" {
@@ -60,16 +81,19 @@ func Load() (Config, error) {
 	return cfg, nil
 }
 
-func parseDurationWithDefault(envKey string, fallback time.Duration) time.Duration {
-	raw := strings.TrimSpace(os.Getenv(envKey))
+func durationFromEnv(key string, fallback time.Duration) (time.Duration, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
 	if raw == "" {
-		return fallback
+		return fallback, nil
 	}
 	d, err := time.ParseDuration(raw)
 	if err != nil {
-		return fallback
+		return 0, fmt.Errorf("%s: %w", key, err)
 	}
-	return d
+	if d <= 0 {
+		return 0, fmt.Errorf("%s must be > 0", key)
+	}
+	return d, nil
 }
 
 func stringWithDefault(val, fallback string) string {
@@ -80,16 +104,11 @@ func stringWithDefault(val, fallback string) string {
 	return val
 }
 
-func parseFloatWithDefault(envKey string, fallback float64) float64 {
-	raw := strings.TrimSpace(os.Getenv(envKey))
-	if raw == "" {
-		return fallback
+func validateEpsilon(name string, value float64) error {
+	if value < 0 || math.IsNaN(value) || math.IsInf(value, 0) {
+		return fmt.Errorf("%s must be finite and >= 0", name)
 	}
-	v, err := strconv.ParseFloat(raw, 64)
-	if err != nil {
-		return fallback
-	}
-	return v
+	return nil
 }
 
 type configFile struct {
@@ -104,6 +123,11 @@ func loadEpsilonOverrides(path string) (map[string]float64, error) {
 	var cf configFile
 	if err := yaml.Unmarshal(data, &cf); err != nil {
 		return nil, err
+	}
+	for entityID, epsilon := range cf.EpsilonOverrides {
+		if err := validateEpsilon("epsilon_overrides["+entityID+"]", epsilon); err != nil {
+			return nil, err
+		}
 	}
 	return cf.EpsilonOverrides, nil
 }
@@ -126,6 +150,9 @@ func splitCSVWithDefault(raw string, fallback []string) []string {
 		if trimmed != "" {
 			out = append(out, trimmed)
 		}
+	}
+	if len(out) == 0 {
+		return fallback
 	}
 	return out
 }

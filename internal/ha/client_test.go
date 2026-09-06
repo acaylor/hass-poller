@@ -52,9 +52,7 @@ func TestFetchStates_Success(t *testing.T) {
 	if states[0].Attributes.UnitOfMeasurement != "°C" {
 		t.Errorf("states[0].Attributes.UnitOfMeasurement = %q", states[0].Attributes.UnitOfMeasurement)
 	}
-	if states[0].Attributes.StateClass != "measurement" {
-		t.Errorf("states[0].Attributes.StateClass = %q", states[0].Attributes.StateClass)
-	}
+
 }
 
 func TestFetchStates_TrimsTrailingSlashFromBaseURL(t *testing.T) {
@@ -168,7 +166,7 @@ func TestFetchHistory_FlattensSeriesAndCarriesUnit(t *testing.T) {
 			],
 			[
 				{"entity_id":"sensor.humidity","state":"40","attributes":{"unit_of_measurement":"%"},"last_changed":"2026-06-20T00:01:00Z"},
-				{"state":"41","attributes":{},"last_changed":"2026-06-20T00:06:00Z"}
+				{"state":"41","last_changed":"2026-06-20T00:06:00Z"}
 			]
 		]`))
 	}))
@@ -204,21 +202,11 @@ func TestFetchHistory_FlattensSeriesAndCarriesUnit(t *testing.T) {
 	}
 }
 
-func TestFetchHistory_OmitsFilterWhenNoEntities(t *testing.T) {
-	var gotQuery string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotQuery = r.URL.RawQuery
-		w.Write([]byte(`[]`))
-	}))
-	defer srv.Close()
-
-	c := NewClient(srv.URL, "tok", time.Second)
-	start := time.Date(2026, 6, 20, 0, 0, 0, 0, time.UTC)
-	if _, err := c.FetchHistory(context.Background(), start, start.Add(time.Hour), nil); err != nil {
-		t.Fatalf("FetchHistory: %v", err)
-	}
-	if strings.Contains(gotQuery, "filter_entity_id") {
-		t.Errorf("query %q should not contain filter_entity_id when no entities given", gotQuery)
+func TestFetchHistory_RequiresEntities(t *testing.T) {
+	c := NewClient("http://unused", "tok", time.Second)
+	start := time.Now()
+	if _, err := c.FetchHistory(context.Background(), start, start.Add(time.Hour), nil); err == nil {
+		t.Fatal("expected empty entity filter to be rejected")
 	}
 }
 
@@ -231,11 +219,33 @@ func TestFetchHistory_Non200ReturnsError(t *testing.T) {
 
 	c := NewClient(srv.URL, "tok", time.Second)
 	start := time.Date(2026, 6, 20, 0, 0, 0, 0, time.UTC)
-	_, err := c.FetchHistory(context.Background(), start, start.Add(time.Hour), nil)
+	_, err := c.FetchHistory(context.Background(), start, start.Add(time.Hour), []string{"sensor.temp"})
 	if err == nil {
 		t.Fatal("expected error on 401, got nil")
 	}
 	if !strings.Contains(err.Error(), "/api/history/period") {
 		t.Errorf("error %q should mention endpoint", err.Error())
+	}
+}
+
+func TestFetchHistory_UnitRemovalAndFractionalBounds(t *testing.T) {
+	start := time.Date(2026, 6, 20, 0, 0, 0, 123456000, time.UTC)
+	end := start.Add(time.Hour)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, start.Format(time.RFC3339Nano)) || r.URL.Query().Get("end_time") != end.Format(time.RFC3339Nano) {
+			t.Errorf("request lost fractional bounds: %s", r.URL)
+		}
+		w.Write([]byte(`[[
+   {"entity_id":"sensor.test","state":"1","attributes":{"unit_of_measurement":"%"},"last_changed":"2026-06-20T00:00:00Z"},
+   {"entity_id":"sensor.test","state":"1","attributes":{},"last_changed":"2026-06-20T00:01:00Z"}
+  ]]`))
+	}))
+	defer srv.Close()
+	history, err := NewClient(srv.URL, "token", time.Second).FetchHistory(context.Background(), start, end, []string{"sensor.test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 2 || history[1].Unit != "" {
+		t.Fatalf("unit removal lost: %+v", history)
 	}
 }

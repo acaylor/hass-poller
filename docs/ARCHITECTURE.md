@@ -65,7 +65,10 @@ Two-stage glob filtering using Go's `path.Match`:
 Each entity has an effective epsilon (per-entity override or `EPSILON_DEFAULT`). On every poll, the parsed value is compared against the last *written* value for that entity:
 
 - If the absolute delta is `> epsilon`, the value is written and becomes the new "last written".
+- A unit change is written even when the numeric value stays the same.
 - Otherwise it is skipped.
+
+The cache advances only after the database insert succeeds.
 
 `EPSILON_DEFAULT=0` (the default) means strict inequality — every change is written. A non-zero epsilon is useful for noisy floating-point sensors where small fluctuations would otherwise produce excessive writes.
 
@@ -73,12 +76,12 @@ Each entity has an effective epsilon (per-entity override or `EPSILON_DEFAULT`).
 
 | Path | Purpose |
 |---|---|
-| `/healthz` | Returns 200 if the last successful poll was within 2 minutes and the database is reachable. Returns 5xx otherwise. |
+| `/healthz` | Returns 200 if the last successful poll was within `max(2 minutes, 2 × POLL_INTERVAL)` and the database is reachable. Returns 5xx otherwise. |
 | `/metrics` | Prometheus exposition: `hapoller_poll_total`, `hapoller_cycle_duration_seconds`, `hapoller_rows_inserted_total`, `hapoller_entities_seen`, `hapoller_entities_skipped`. |
 
 ## Failure modes
 
-- **HA unreachable** — the poll fails fast with a logged error; the next tick retries. `/healthz` flips to unhealthy after 2 minutes of failures.
-- **TimescaleDB unreachable** — the engine logs and skips the write phase but continues polling. Metrics distinguish "fetched" from "inserted".
+- **HA unreachable** — the poll fails fast with a logged error; the next tick retries. `/healthz` flips to unhealthy once the last successful poll exceeds `max(2 minutes, 2 × POLL_INTERVAL)`.
+- **TimescaleDB unreachable** — the engine logs the failed insert and keeps the last successfully written values, so subsequent polls retry values that remain changed.
 - **Schema drift** — `schema.sql` migrations are idempotent. Renames or destructive changes need a manual one-shot migration; this is not currently automated.
-- **Graceful shutdown** — on SIGTERM/SIGINT the engine completes the in-flight poll and flushes pending writes before exiting.
+- **Shutdown** — SIGTERM/SIGINT cancels the poll context, including an in-flight fetch or insert. There is no pending-write queue to flush. Active health and metrics requests get up to 5 seconds to finish.

@@ -19,7 +19,6 @@ type State struct {
 
 type Attributes struct {
 	UnitOfMeasurement string `json:"unit_of_measurement"`
-	StateClass        string `json:"state_class"`
 }
 
 // HistoryState is a single recorded state change returned by the history API.
@@ -66,17 +65,18 @@ func (c *Client) FetchStates(ctx context.Context) ([]State, error) {
 }
 
 // FetchHistory returns every recorded state change in [start, end] for the
-// given entities. An empty entityIDs returns history for all recorded entities.
+// given entities. At least one entity ID is required.
 // Results are bounded by Home Assistant's recorder retention (purge_keep_days).
 func (c *Client) FetchHistory(ctx context.Context, start, end time.Time, entityIDs []string) ([]HistoryState, error) {
-	q := url.Values{}
-	q.Set("end_time", end.UTC().Format(time.RFC3339))
-	q.Set("significant_changes_only", "0")
-	if len(entityIDs) > 0 {
-		q.Set("filter_entity_id", strings.Join(entityIDs, ","))
+	if len(entityIDs) == 0 {
+		return nil, fmt.Errorf("history requires at least one entity ID")
 	}
+	q := url.Values{}
+	q.Set("end_time", end.UTC().Format(time.RFC3339Nano))
+	q.Set("significant_changes_only", "0")
+	q.Set("filter_entity_id", strings.Join(entityIDs, ","))
 
-	path := "/api/history/period/" + url.PathEscape(start.UTC().Format(time.RFC3339)) + "?" + q.Encode()
+	path := "/api/history/period/" + url.PathEscape(start.UTC().Format(time.RFC3339Nano)) + "?" + q.Encode()
 	resp, err := c.get(ctx, path)
 	if err != nil {
 		return nil, err
@@ -89,10 +89,10 @@ func (c *Client) FetchHistory(ctx context.Context, start, end time.Time, entityI
 
 	// The endpoint returns one inner array per entity, ordered chronologically.
 	var raw [][]struct {
-		EntityID    string     `json:"entity_id"`
-		State       string     `json:"state"`
-		Attributes  Attributes `json:"attributes"`
-		LastChanged time.Time  `json:"last_changed"`
+		EntityID    string      `json:"entity_id"`
+		State       string      `json:"state"`
+		Attributes  *Attributes `json:"attributes"`
+		LastChanged time.Time   `json:"last_changed"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
 		return nil, fmt.Errorf("decode history payload: %w", err)
@@ -100,15 +100,15 @@ func (c *Client) FetchHistory(ctx context.Context, start, end time.Time, entityI
 
 	var out []HistoryState
 	for _, series := range raw {
-		// With attributes present on every entry the unit is per-row, but older
-		// HA omits attributes after the first entry, so carry the last seen unit.
+		// Omitted attributes inherit the last unit; explicit empty attributes
+		// clear it when a sensor becomes unitless.
 		unit := ""
 		entityID := ""
 		for _, e := range series {
 			if e.EntityID != "" {
 				entityID = e.EntityID
 			}
-			if e.Attributes.UnitOfMeasurement != "" {
+			if e.Attributes != nil {
 				unit = e.Attributes.UnitOfMeasurement
 			}
 			out = append(out, HistoryState{

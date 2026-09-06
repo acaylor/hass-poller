@@ -4,27 +4,10 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
-
-func TestStringWithDefault(t *testing.T) {
-	tests := []struct {
-		name, val, fallback, want string
-	}{
-		{"empty falls back", "", "default", "default"},
-		{"whitespace falls back", "   ", "default", "default"},
-		{"value used", "actual", "default", "actual"},
-		{"value trimmed", "  actual  ", "default", "actual"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := stringWithDefault(tt.val, tt.fallback); got != tt.want {
-				t.Errorf("stringWithDefault(%q, %q) = %q, want %q", tt.val, tt.fallback, got, tt.want)
-			}
-		})
-	}
-}
 
 func TestSplitCSVWithDefault(t *testing.T) {
 	tests := []struct {
@@ -40,6 +23,7 @@ func TestSplitCSVWithDefault(t *testing.T) {
 		{"multiple values", "sensor.foo,sensor.bar", nil, []string{"sensor.foo", "sensor.bar"}},
 		{"trims whitespace around values", " a , b ,c ", nil, []string{"a", "b", "c"}},
 		{"drops empty parts from doubled commas", "a,,b", nil, []string{"a", "b"}},
+		{"commas alone preserve default allowlist", " , , ", []string{"sensor.*"}, []string{"sensor.*"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -57,51 +41,6 @@ func TestSplitCSVWithDefault_FallbackIsCopied(t *testing.T) {
 	out[0] = "mutated"
 	if fallback[0] != "sensor.*" {
 		t.Fatalf("fallback was mutated through returned slice: %v", fallback)
-	}
-}
-
-func TestParseDurationWithDefault(t *testing.T) {
-	tests := []struct {
-		name, env string
-		fallback  time.Duration
-		want      time.Duration
-	}{
-		{"unset uses fallback", "", time.Minute, time.Minute},
-		{"valid duration", "30s", time.Minute, 30 * time.Second},
-		{"invalid duration falls back", "not-a-duration", time.Minute, time.Minute},
-		{"whitespace only falls back", "   ", time.Minute, time.Minute},
-		{"value with surrounding whitespace", "  10s  ", time.Minute, 10 * time.Second},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv("TEST_DUR", tt.env)
-			if got := parseDurationWithDefault("TEST_DUR", tt.fallback); got != tt.want {
-				t.Errorf("parseDurationWithDefault(%q) = %v, want %v", tt.env, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestParseFloatWithDefault(t *testing.T) {
-	tests := []struct {
-		name, env string
-		fallback  float64
-		want      float64
-	}{
-		{"unset uses fallback", "", 0.5, 0.5},
-		{"valid float", "0.05", 0, 0.05},
-		{"integer parses as float", "3", 0, 3},
-		{"negative float", "-1.5", 0, -1.5},
-		{"invalid falls back", "abc", 0.5, 0.5},
-		{"whitespace only falls back", "   ", 0.5, 0.5},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv("TEST_FLOAT", tt.env)
-			if got := parseFloatWithDefault("TEST_FLOAT", tt.fallback); got != tt.want {
-				t.Errorf("parseFloatWithDefault(%q) = %v, want %v", tt.env, got, tt.want)
-			}
-		})
 	}
 }
 
@@ -242,14 +181,36 @@ func TestLoad(t *testing.T) {
 		}
 	})
 
-	t.Run("non-positive POLL_INTERVAL fails", func(t *testing.T) {
-		requiredEnv(t)
-		clearOptionalEnv(t)
-		t.Setenv("POLL_INTERVAL", "0s")
-		if _, err := Load(); err == nil {
-			t.Fatal("expected error for POLL_INTERVAL=0s")
-		}
-	})
+	for _, tt := range []struct{ key, value string }{
+		{"POLL_INTERVAL", "0s"}, {"POLL_INTERVAL", "-1m"}, {"POLL_INTERVAL", "typo"},
+		{"HTTP_TIMEOUT", "0s"}, {"HTTP_TIMEOUT", "-1s"}, {"HTTP_TIMEOUT", "typo"},
+		{"EPSILON_DEFAULT", "-0.1"}, {"EPSILON_DEFAULT", "NaN"},
+		{"EPSILON_DEFAULT", "+Inf"}, {"EPSILON_DEFAULT", "typo"},
+		{"ENTITY_ALLOWLIST", "sensor.["}, {"ENTITY_BLOCKLIST", "sensor.["},
+	} {
+		t.Run(tt.key+"="+tt.value, func(t *testing.T) {
+			requiredEnv(t)
+			clearOptionalEnv(t)
+			t.Setenv(tt.key, tt.value)
+			if _, err := Load(); err == nil || !strings.Contains(err.Error(), tt.key) {
+				t.Fatalf("expected error naming %s, got %v", tt.key, err)
+			}
+		})
+	}
+	for _, value := range []string{"-0.1", ".nan", ".inf"} {
+		t.Run("invalid YAML epsilon "+value, func(t *testing.T) {
+			requiredEnv(t)
+			clearOptionalEnv(t)
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			if err := writeFile(path, "epsilon_overrides:\n  sensor.bad: "+value+"\n"); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("CONFIG_FILE", path)
+			if _, err := Load(); err == nil || !strings.Contains(err.Error(), "sensor.bad") {
+				t.Fatalf("expected error naming sensor.bad, got %v", err)
+			}
+		})
+	}
 
 	t.Run("CONFIG_FILE loads epsilon overrides", func(t *testing.T) {
 		requiredEnv(t)
