@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Update `github.com/jackc/pgx/v5` from 5.10.0 to 5.11.0.
+- Update the TimescaleDB Docker image from 2.29.2-pg16 to 2.30.2-pg16.
+- Update the Adminer Docker image from 6.0.1 to 6.1.1.
+
 ## [0.2.2] - 2026-09-05
 
 ### Fixed
