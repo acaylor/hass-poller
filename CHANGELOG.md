@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Convert values to the unit in effect at the end of each rollup bucket before
   aggregating, using the new `ha_unit` table, and leave out values in units
   that cannot be converted. Previously a unit change mixed units in one bucket.
+- Bound each live database insert by the new `DB_WRITE_TIMEOUT` (default
+  `30s`), so a write blocked on a lock no longer stops polling.
 
 ### Changed
 

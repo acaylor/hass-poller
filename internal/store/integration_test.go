@@ -295,3 +295,33 @@ func TestIntegration_MigratesContinuousAggregates(t *testing.T) {
 		t.Errorf("%d legacy relations left behind", legacy)
 	}
 }
+
+func TestIntegration_BlockedWriteHonorsDeadline(t *testing.T) {
+	s := integrationStore(t)
+	ctx := context.Background()
+	if err := s.EnsureSchema(ctx, hasspoller.SchemaSQL); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, "LOCK TABLE ha_numeric IN ACCESS EXCLUSIVE MODE"); err != nil {
+		t.Fatal(err)
+	}
+
+	writeCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	_, err = s.InsertMeasurements(writeCtx, []Measurement{{Timestamp: started, EntityID: "sensor.temp", Value: 1}})
+	if err == nil {
+		t.Fatal("write succeeded through an exclusive lock")
+	}
+	if waited := time.Since(started); waited < 500*time.Millisecond || waited > 5*time.Second {
+		t.Fatalf("blocked write returned after %s", waited)
+	}
+	if !s.Healthy(ctx) {
+		t.Fatal("pool unusable after a cancelled write")
+	}
+}

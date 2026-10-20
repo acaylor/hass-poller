@@ -103,6 +103,6 @@ The cache advances only after the database insert succeeds.
 ## Failure modes
 
 - **HA unreachable** — the poll fails fast with a logged error; the next tick retries. `/healthz` flips to unhealthy once the last successful poll exceeds `max(2 minutes, 2 × POLL_INTERVAL)`.
-- **TimescaleDB unreachable** — the engine logs the failed insert and keeps the last successfully written values, so subsequent polls retry values that remain changed.
+- **TimescaleDB unreachable or blocked** — each insert must finish within `DB_WRITE_TIMEOUT` (default 30 seconds), so a write waiting on a lock cannot stall polling. The engine logs the failed insert and keeps the last successfully written values, so subsequent polls retry values that remain changed.
 - **Schema drift** — `schema.sql` migrations are idempotent. Renames or destructive changes need a manual one-shot migration; this is not currently automated.
 - **Shutdown** — SIGTERM/SIGINT cancels the poll context, including an in-flight fetch or insert. There is no pending-write queue to flush. Active health and metrics requests get up to 5 seconds to finish.

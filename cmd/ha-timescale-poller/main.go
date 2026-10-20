@@ -42,7 +42,7 @@ func main() {
 	haClient := ha.NewClient(cfg.HABaseURL, cfg.HAToken, cfg.HTTPTimeout)
 	entityFilter := filter.NewGlobFilter(cfg.EntityAllowlist, cfg.EntityBlocklist)
 
-	poller := engine.New(haClient, entityFilter, db, cfg.PollInterval, cfg.EpsilonDefault, cfg.EpsilonOverrides, logger)
+	poller := engine.New(haClient, entityFilter, db, cfg.PollInterval, cfg.DBWriteTimeout, cfg.EpsilonDefault, cfg.EpsilonOverrides, logger)
 
 	// Start HTTP server for health and metrics.
 	httpSrv := httpserver.New(cfg.HTTPListenAddr, poller, cfg.PollInterval)

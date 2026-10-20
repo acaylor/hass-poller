@@ -23,10 +23,15 @@ func (f *fakeFetcher) FetchStates(ctx context.Context) ([]ha.State, error) {
 type fakeStore struct {
 	batches   [][]store.Measurement
 	insertErr error
+	block     bool // Wait for the context like a write stuck on a lock.
 	healthy   bool
 }
 
 func (s *fakeStore) InsertMeasurements(ctx context.Context, m []store.Measurement) (int64, error) {
+	if s.block {
+		<-ctx.Done()
+		return 0, ctx.Err()
+	}
 	if s.insertErr != nil {
 		return 0, s.insertErr
 	}

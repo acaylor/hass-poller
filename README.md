@@ -51,6 +51,7 @@ All configuration is via environment variables:
 | `PG_DSN` | Yes | — | PostgreSQL connection string |
 | `POLL_INTERVAL` | No | `1m` | How often to poll HA |
 | `HTTP_TIMEOUT` | No | `10s` | HTTP client timeout for HA API calls |
+| `DB_WRITE_TIMEOUT` | No | `30s` | Deadline for each poll's database insert |
 | `ENTITY_ALLOWLIST` | No | `sensor.*` | Comma-separated glob patterns to include |
 | `ENTITY_BLOCKLIST` | No | _(empty)_ | Comma-separated glob patterns to exclude |
 | `EPSILON_DEFAULT` | No | `0` | Minimum change threshold to trigger a write |

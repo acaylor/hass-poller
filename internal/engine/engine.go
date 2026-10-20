@@ -82,6 +82,7 @@ type Engine struct {
 	entityFilter     *filter.GlobFilter
 	store            MeasurementStore
 	pollInterval     time.Duration
+	writeTimeout     time.Duration
 	logger           *log.Logger
 	epsilonDefault   float64
 	epsilonOverrides map[string]float64
@@ -94,6 +95,7 @@ func New(
 	entityFilter *filter.GlobFilter,
 	store MeasurementStore,
 	pollInterval time.Duration,
+	writeTimeout time.Duration,
 	epsilonDefault float64,
 	epsilonOverrides map[string]float64,
 	logger *log.Logger,
@@ -103,6 +105,7 @@ func New(
 		entityFilter:     entityFilter,
 		store:            store,
 		pollInterval:     pollInterval,
+		writeTimeout:     writeTimeout,
 		logger:           logger,
 		epsilonDefault:   epsilonDefault,
 		epsilonOverrides: epsilonOverrides,
@@ -201,7 +204,10 @@ func (e *Engine) runCycle(ctx context.Context) error {
 		})
 	}
 
-	inserted, err := e.store.InsertMeasurements(ctx, measurements)
+	// A write blocked on a database lock must not stall later polls.
+	writeCtx, cancel := context.WithTimeout(ctx, e.writeTimeout)
+	inserted, err := e.store.InsertMeasurements(writeCtx, measurements)
+	cancel()
 	if err != nil {
 		return err
 	}

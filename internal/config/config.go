@@ -18,6 +18,7 @@ type Config struct {
 	PGDSN            string
 	PollInterval     time.Duration
 	HTTPTimeout      time.Duration
+	DBWriteTimeout   time.Duration
 	EntityAllowlist  []string
 	EntityBlocklist  []string
 	EpsilonDefault   float64
@@ -49,6 +50,9 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	if cfg.HTTPTimeout, err = durationFromEnv("HTTP_TIMEOUT", 10*time.Second); err != nil {
+		return Config{}, err
+	}
+	if cfg.DBWriteTimeout, err = durationFromEnv("DB_WRITE_TIMEOUT", 30*time.Second); err != nil {
 		return Config{}, err
 	}
 	if raw := strings.TrimSpace(os.Getenv("EPSILON_DEFAULT")); raw != "" {
