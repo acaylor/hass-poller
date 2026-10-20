@@ -75,7 +75,18 @@ WantedBy=multi-user.target
 go test ./...
 ```
 
-Tests are pure-Go and do not require a running database — store tests use a fake transaction to check replacement scope, rollback paths, and row encoding. These do not validate SQL execution or TimescaleDB compression and aggregate behavior. Use a disposable TimescaleDB instance for integration checks; `/healthz` alone only checks poll freshness and database reachability.
+Unit tests are pure-Go and do not require a running database — store tests use fakes to check replacement scope, rollback paths, row encoding, and refresh calls.
+
+Integration tests apply `schema.sql` to a disposable TimescaleDB and check the time-weighted rollups, unit conversion, and the migration from the pre-0.3.0 continuous aggregates. Each run works in a fresh schema that is dropped afterwards. They are skipped unless `HASS_POLLER_TEST_DSN` is set:
+
+```bash
+docker run -d --rm --name hass-poller-test -p 55432:5432 \
+  -e POSTGRES_PASSWORD=test timescale/timescaledb:2.30.2-pg16
+HASS_POLLER_TEST_DSN=postgres://postgres:test@localhost:55432/postgres?sslmode=disable \
+  go test ./internal/store/ -run Integration
+```
+
+`/healthz` alone only checks poll freshness and database reachability.
 
 ## Editing the architecture diagram
 

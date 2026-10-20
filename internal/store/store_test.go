@@ -47,6 +47,16 @@ func TestSplitSQLStatements(t *testing.T) {
 			in:   "SELECT 1;;\n  ;SELECT 2;",
 			want: []string{"SELECT 1", "SELECT 2"},
 		},
+		{
+			name: "dollar-quoted bodies are not split",
+			in:   "DO $$ BEGIN PERFORM 1; END $$;\nCREATE FUNCTION f() RETURNS int LANGUAGE sql AS $fn$ SELECT 1; $fn$;",
+			want: []string{"DO $$ BEGIN PERFORM 1; END $$", "CREATE FUNCTION f() RETURNS int LANGUAGE sql AS $fn$ SELECT 1; $fn$"},
+		},
+		{
+			name: "strings and comments are not split",
+			in:   "SELECT 'a;''b' -- c;d\n/* e;f */;SELECT $1",
+			want: []string{"SELECT 'a;''b' -- c;d\n/* e;f */", "SELECT $1"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -184,5 +194,31 @@ func TestRefreshWindow(t *testing.T) {
 		if !from.Equal(tt.from) || !to.Equal(tt.to) {
 			t.Fatalf("aligned boundaries changed: %s..%s", from, to)
 		}
+	}
+}
+
+type execPool struct {
+	pool
+	execs [][]any
+}
+
+func (p *execPool) Exec(_ context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+	p.execs = append(p.execs, append([]any{sql}, args...))
+	return pgconn.NewCommandTag("SELECT 1"), nil
+}
+
+func TestRefreshRollups(t *testing.T) {
+	p := &execPool{}
+	start := time.Date(2026, 6, 20, 10, 30, 0, 0, time.UTC)
+	if err := (&Store{pool: p}).RefreshRollups(context.Background(), start, start.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	const sql = "SELECT ha_numeric_refresh_rollup($1::regclass, $2::interval, $3, $4)"
+	want := [][]any{
+		{sql, "ha_numeric_1h", "1 hour", start.Truncate(time.Hour), start.Add(2 * time.Hour).Truncate(time.Hour)},
+		{sql, "ha_numeric_1d", "1 day", start.Truncate(24 * time.Hour), start.Truncate(24 * time.Hour).Add(24 * time.Hour)},
+	}
+	if !reflect.DeepEqual(p.execs, want) {
+		t.Fatalf("got %+v\nwant %+v", p.execs, want)
 	}
 }

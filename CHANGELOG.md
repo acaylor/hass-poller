@@ -7,7 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Weight the hourly and daily rollup averages by how long each value was in
+  effect, carry values across bucket boundaries, and keep constant sensors in
+  every bucket. Previously the rollups averaged recorded changes and skipped
+  unchanged sensors.
+- Convert values to the unit in effect at the end of each rollup bucket before
+  aggregating, using the new `ha_unit` table, and leave out values in units
+  that cannot be converted. Previously a unit change mixed units in one bucket.
+
 ### Changed
+
+- Replace the `ha_numeric_1h` and `ha_numeric_1d` continuous aggregates with
+  tables refreshed by TimescaleDB jobs, adding `unit` and `seconds` columns.
+  Startup migrates existing aggregates, recomputing the buckets that raw data
+  still covers and keeping older buckets with `NULL` `unit` and `seconds`. The
+  first startup after upgrading recomputes up to 90 days of raw data.
+- Write unchanged values every 15 minutes in the poller and `backfill`, so the
+  rollups can distinguish constant sensors from ones that stopped reporting.
+- Start `backfill` from the value in effect at `-start`.
 
 - Update `github.com/jackc/pgx/v5` from 5.10.0 to 5.11.0.
 - Update the TimescaleDB Docker image from 2.29.2-pg16 to 2.30.2-pg16.

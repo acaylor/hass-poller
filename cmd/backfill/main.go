@@ -130,11 +130,11 @@ func main() {
 	logger.Printf("inserted %d rows", inserted)
 
 	if *noRefresh {
-		logger.Printf("skipping continuous aggregate refresh (run refresh_continuous_aggregate manually)")
+		logger.Printf("skipping rollup refresh (run ha_numeric_refresh_rollup manually)")
 		return
 	}
-	if err := db.RefreshContinuousAggregates(ctx, start, end); err != nil {
-		logger.Fatalf("refresh continuous aggregates: %v", err)
+	if err := db.RefreshRollups(ctx, start, end); err != nil {
+		logger.Fatalf("refresh rollups: %v", err)
 	}
 	logger.Printf("refreshed hourly and daily aggregates for the range")
 }
@@ -142,7 +142,9 @@ func main() {
 // buildMeasurements applies the same allow/block filtering, numeric parsing, and
 // per-entity epsilon change detection as the live poller, walking each entity's
 // history in chronological order so epsilon compares against the last written
-// value. Only changes within [start, end) are kept.
+// value. Only changes within [start, end) are kept; the latest earlier record is
+// the value in effect at start. Like the poller, an unchanged value is written
+// again every engine.HeartbeatInterval until the entity's next record.
 func buildMeasurements(
 	history []ha.HistoryState,
 	entityFilter *filter.GlobFilter,
@@ -170,34 +172,44 @@ func buildMeasurements(
 			eps = e
 		}
 
-		var last float64
-		var lastUnit string
-		first := true
+		var last store.Measurement
+		held := false
+		heartbeat := func(until time.Time) {
+			for held && last.Timestamp.Add(engine.HeartbeatInterval).Before(until) {
+				last.Timestamp = last.Timestamp.Add(engine.HeartbeatInterval)
+				out = append(out, last)
+			}
+		}
 		var previous ha.HistoryState
-		for _, h := range series {
-			ts := h.LastChanged.UTC()
-			if ts.Before(start) || !ts.Before(end) || h == previous {
+		for i, h := range series {
+			h.LastChanged = h.LastChanged.UTC()
+			if h.LastChanged.Before(start) {
+				if i+1 < len(series) && !series[i+1].LastChanged.After(start) {
+					continue // A later record is in effect at start.
+				}
+				h.LastChanged = start
+			}
+			if !h.LastChanged.Before(end) {
+				break
+			}
+			if h == previous {
 				continue
 			}
 			previous = h
+			heartbeat(h.LastChanged)
 			value, ok := engine.ParseNumericState(h.State)
 			if !ok {
+				held = false
 				continue
 			}
-			if !noEpsilon && !engine.ShouldWrite(value, last, eps, first, h.Unit, lastUnit) {
+			if held && !noEpsilon && !engine.ShouldWrite(value, last.Value, eps, false, h.Unit, last.Unit) {
 				continue
 			}
-			last = value
-			lastUnit = h.Unit
-			first = false
-
-			out = append(out, store.Measurement{
-				Timestamp: ts,
-				EntityID:  entityID,
-				Value:     value,
-				Unit:      h.Unit,
-			})
+			last = store.Measurement{Timestamp: h.LastChanged, EntityID: entityID, Value: value, Unit: h.Unit}
+			held = true
+			out = append(out, last)
 		}
+		heartbeat(end)
 	}
 
 	return out

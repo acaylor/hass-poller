@@ -1,12 +1,15 @@
 package main
 
 import (
+	"reflect"
 	"testing"
 	"time"
 
 	"hass-poller/internal/config"
+	"hass-poller/internal/engine"
 	"hass-poller/internal/filter"
 	"hass-poller/internal/ha"
+	"hass-poller/internal/store"
 )
 
 func ts(s string) time.Time {
@@ -15,6 +18,23 @@ func ts(s string) time.Time {
 		panic(err)
 	}
 	return t
+}
+
+// withoutHeartbeats drops rows that repeat the entity's previous row one
+// heartbeat interval later, leaving the recorded changes.
+func withoutHeartbeats(measurements []store.Measurement) []store.Measurement {
+	var out []store.Measurement
+	last := map[string]store.Measurement{}
+	for _, m := range measurements {
+		prev, ok := last[m.EntityID]
+		last[m.EntityID] = m
+		if ok && m.Value == prev.Value && m.Unit == prev.Unit &&
+			m.Timestamp.Sub(prev.Timestamp) == engine.HeartbeatInterval {
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
 }
 
 func TestBuildMeasurements(t *testing.T) {
@@ -37,7 +57,7 @@ func TestBuildMeasurements(t *testing.T) {
 	f := filter.NewGlobFilter([]string{"sensor.*"}, []string{"sensor.energy_*"})
 	cfg := config.Config{EpsilonDefault: 0}
 
-	got := buildMeasurements(history, f, start, end, cfg, false)
+	got := withoutHeartbeats(buildMeasurements(history, f, start, end, cfg, false))
 
 	if len(got) != 2 {
 		t.Fatalf("got %d measurements, want 2: %+v", len(got), got)
@@ -65,12 +85,12 @@ func TestBuildMeasurements_EpsilonOverrideAndNoEpsilon(t *testing.T) {
 		EpsilonOverrides: map[string]float64{"sensor.noisy": 0.1},
 	}
 
-	withEps := buildMeasurements(history, f, start, end, cfg, false)
+	withEps := withoutHeartbeats(buildMeasurements(history, f, start, end, cfg, false))
 	if len(withEps) != 2 {
 		t.Fatalf("with epsilon: got %d, want 2 (first + jump past 0.1)", len(withEps))
 	}
 
-	noEps := buildMeasurements(history, f, start, end, cfg, true)
+	noEps := withoutHeartbeats(buildMeasurements(history, f, start, end, cfg, true))
 	if len(noEps) != 3 {
 		t.Fatalf("no-epsilon: got %d, want 3 (every change)", len(noEps))
 	}
@@ -87,9 +107,35 @@ func TestBuildMeasurements_RangeAndDuplicateBoundaries(t *testing.T) {
 		{EntityID: "sensor.temp", State: "21", Unit: "°F", LastChanged: end},
 	}
 	for _, noEpsilon := range []bool{false, true} {
-		got := buildMeasurements(history, filter.NewGlobFilter(nil, nil), start, end, config.Config{}, noEpsilon)
+		got := withoutHeartbeats(buildMeasurements(history, filter.NewGlobFilter(nil, nil), start, end, config.Config{}, noEpsilon))
 		if len(got) != 2 || !got[0].Timestamp.Equal(start) || got[1].Unit != "°F" {
 			t.Fatalf("no-epsilon=%v: got %+v, want first in-range row and unit change", noEpsilon, got)
 		}
+	}
+}
+
+func TestBuildMeasurements_HeartbeatsAndStartValue(t *testing.T) {
+	start := ts("2026-06-20T00:10:00Z")
+	end := ts("2026-06-20T01:20:00Z")
+	history := []ha.HistoryState{
+		// Only the latest record before start is in effect at start.
+		{EntityID: "sensor.temp", State: "18", Unit: "°C", LastChanged: ts("2026-06-19T22:00:00Z")},
+		{EntityID: "sensor.temp", State: "19", Unit: "°C", LastChanged: ts("2026-06-19T23:00:00Z")},
+		{EntityID: "sensor.temp", State: "20", Unit: "°C", LastChanged: ts("2026-06-20T00:30:00Z")},
+		// A non-numeric state stops heartbeats until the next numeric value.
+		{EntityID: "sensor.temp", State: "unavailable", LastChanged: ts("2026-06-20T00:50:00Z")},
+		{EntityID: "sensor.temp", State: "20", Unit: "°C", LastChanged: ts("2026-06-20T01:10:00Z")},
+	}
+	got := buildMeasurements(history, filter.NewGlobFilter(nil, nil), start, end, config.Config{}, false)
+
+	want := []store.Measurement{
+		{Timestamp: start, EntityID: "sensor.temp", Value: 19, Unit: "°C"},
+		{Timestamp: ts("2026-06-20T00:25:00Z"), EntityID: "sensor.temp", Value: 19, Unit: "°C"},
+		{Timestamp: ts("2026-06-20T00:30:00Z"), EntityID: "sensor.temp", Value: 20, Unit: "°C"},
+		{Timestamp: ts("2026-06-20T00:45:00Z"), EntityID: "sensor.temp", Value: 20, Unit: "°C"},
+		{Timestamp: ts("2026-06-20T01:10:00Z"), EntityID: "sensor.temp", Value: 20, Unit: "°C"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %+v\nwant %+v", got, want)
 	}
 }

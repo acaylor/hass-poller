@@ -56,9 +56,16 @@ type MeasurementStore interface {
 	Healthy(ctx context.Context) bool
 }
 
+// HeartbeatInterval is how often an unchanged value is written again. The
+// rollups carry a value forward for at most one hour without a newer row, so
+// heartbeats keep constant sensors in every bucket while letting entities that
+// stop reporting drop out.
+const HeartbeatInterval = 15 * time.Minute
+
 type entityState struct {
-	value float64
-	unit  string
+	value   float64
+	unit    string
+	written time.Time
 }
 
 // ShouldWrite reports whether this is a first observation, a unit change, or
@@ -180,7 +187,8 @@ func (e *Engine) runCycle(ctx context.Context) error {
 
 		last, exists := e.state[s.EntityID]
 		eps := e.epsilonFor(s.EntityID)
-		if !ShouldWrite(value, last.value, eps, !exists, s.Attributes.UnitOfMeasurement, last.unit) {
+		heartbeatDue := ts.Sub(last.written) >= HeartbeatInterval
+		if !heartbeatDue && !ShouldWrite(value, last.value, eps, !exists, s.Attributes.UnitOfMeasurement, last.unit) {
 			skipped++
 			continue
 		}
@@ -200,7 +208,7 @@ func (e *Engine) runCycle(ctx context.Context) error {
 
 	// Only committed measurements may suppress future writes.
 	for _, m := range measurements {
-		e.state[m.EntityID] = entityState{value: m.Value, unit: m.Unit}
+		e.state[m.EntityID] = entityState{value: m.Value, unit: m.Unit, written: m.Timestamp}
 	}
 
 	duration := time.Since(started)

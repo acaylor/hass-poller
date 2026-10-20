@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -127,23 +128,20 @@ func measurementRows(measurements []Measurement) pgx.CopyFromSource {
 	})
 }
 
-// RefreshContinuousAggregates re-materializes the hourly and daily rollups for
-// every bucket touched by [start, end). Automatic refresh policies only cover
-// the recent window (start_offset of 7 days).
-// refresh_continuous_aggregate cannot run inside a transaction, so each call is
-// issued on its own via the pool.
-func (s *Store) RefreshContinuousAggregates(ctx context.Context, start, end time.Time) error {
-	for _, aggregate := range []struct {
-		view   string
+// RefreshRollups recomputes the time-weighted hourly and daily rollups for
+// every bucket touched by [start, end). The scheduled rollup jobs only cover
+// the most recent buckets.
+func (s *Store) RefreshRollups(ctx context.Context, start, end time.Time) error {
+	for _, rollup := range []struct {
+		table  string
+		width  string
 		bucket time.Duration
-	}{{"ha_numeric_1h", time.Hour}, {"ha_numeric_1d", 24 * time.Hour}} {
-		from, to := refreshWindow(start, end, aggregate.bucket)
-		// Simple protocol keeps CALL outside an explicit transaction, while pgx
-		// handles quoting parameters.
+	}{{"ha_numeric_1h", "1 hour", time.Hour}, {"ha_numeric_1d", "1 day", 24 * time.Hour}} {
+		from, to := refreshWindow(start, end, rollup.bucket)
 		if _, err := s.pool.Exec(ctx,
-			"CALL refresh_continuous_aggregate($1::regclass, $2::timestamptz, $3::timestamptz)",
-			pgx.QueryExecModeSimpleProtocol, aggregate.view, from, to); err != nil {
-			return fmt.Errorf("refresh %s: %w", aggregate.view, err)
+			"SELECT ha_numeric_refresh_rollup($1::regclass, $2::interval, $3, $4)",
+			rollup.table, rollup.width, from, to); err != nil {
+			return fmt.Errorf("refresh %s: %w", rollup.table, err)
 		}
 	}
 	return nil
@@ -158,14 +156,47 @@ func refreshWindow(start, end time.Time, bucket time.Duration) (time.Time, time.
 	return from, to
 }
 
+// splitSQLStatements splits on semicolons outside quoted strings, comments, and
+// dollar-quoted bodies. Statements run one at a time because several
+// TimescaleDB calls refuse to run inside the implicit transaction of a
+// multi-statement query.
 func splitSQLStatements(sqlText string) []string {
-	parts := strings.Split(sqlText, ";")
-	stmts := make([]string, 0, len(parts))
-	for _, part := range parts {
-		stmt := strings.TrimSpace(part)
-		if stmt == "" {
-			continue
+	var stmts []string
+	start := 0
+	for i := 0; i < len(sqlText); i++ {
+		switch {
+		case sqlText[i] == '\'':
+			i = skipPast(sqlText, i+1, "'")
+		case strings.HasPrefix(sqlText[i:], "--"):
+			i = skipPast(sqlText, i+2, "\n")
+		case strings.HasPrefix(sqlText[i:], "/*"):
+			i = skipPast(sqlText, i+2, "*/")
+		case sqlText[i] == '$':
+			if tag := dollarQuoteTag.FindString(sqlText[i:]); tag != "" {
+				i = skipPast(sqlText, i+len(tag), tag)
+			}
+		case sqlText[i] == ';':
+			stmts = appendStatement(stmts, sqlText[start:i])
+			start = i + 1
 		}
+	}
+	return appendStatement(stmts, sqlText[start:])
+}
+
+var dollarQuoteTag = regexp.MustCompile(`^\$([A-Za-z_][A-Za-z0-9_]*)?\$`)
+
+// skipPast returns the index of the last byte of the first terminator at or
+// after from, or the end of text when the terminator is missing. A doubled
+// single quote inside a string is found as two adjacent terminators.
+func skipPast(text string, from int, terminator string) int {
+	if j := strings.Index(text[from:], terminator); j >= 0 {
+		return from + j + len(terminator) - 1
+	}
+	return len(text) - 1
+}
+
+func appendStatement(stmts []string, stmt string) []string {
+	if stmt = strings.TrimSpace(stmt); stmt != "" {
 		stmts = append(stmts, stmt)
 	}
 	return stmts

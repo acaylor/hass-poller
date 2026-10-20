@@ -8,6 +8,7 @@ A small Go service that polls Home Assistant every minute, extracts numeric sens
 - Entity filtering via **allowlist** and **blocklist** with glob pattern matching
 - **Epsilon-based change detection** to avoid writing unchanged values (configurable per-entity)
 - Batch inserts via `pgx.CopyFrom` for efficient writes
+- Time-weighted hourly and daily rollups that convert units before aggregating
 - TimescaleDB compression (7 days) and tiered retention: raw 90 days, hourly 1 year, daily kept forever
 - Prometheus metrics at `/metrics` and health check at `/healthz`
 - Signal-driven cancellation and HTTP server shutdown
@@ -100,16 +101,16 @@ Point a PostgreSQL datasource at your TimescaleDB instance. Pick the table that 
 SELECT ts AS time, value FROM ha_numeric
 WHERE entity_id = 'sensor.kitchen_temperature' AND $__timeFilter(ts) ORDER BY ts;
 
--- Months (hourly rollup, 1 year):
+-- Months (hourly time-weighted rollup, 1 year):
 SELECT bucket AS time, avg, min, max FROM ha_numeric_1h
 WHERE entity_id = 'sensor.kitchen_temperature' AND $__timeFilter(bucket) ORDER BY bucket;
 
--- Years (daily rollup, kept forever):
+-- Years (daily time-weighted rollup, kept forever):
 SELECT bucket AS time, avg, min, max FROM ha_numeric_1d
 WHERE entity_id = 'sensor.kitchen_temperature' AND $__timeFilter(bucket) ORDER BY bucket;
 ```
 
-Use Grafana's "fill: previous" or "connect null values" to handle gaps between change-only writes.
+The raw table stores changes plus a heartbeat every 15 minutes, so use Grafana's "fill: previous" or "connect null values" to draw it. The rollups already account for how long each value lasted, and each rollup row reports its `unit`. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#rollup-semantics) for details.
 
 ## Backups
 
@@ -156,12 +157,12 @@ docker compose exec poller /usr/local/bin/backfill -start 2026-06-20T00:00:00Z -
 | `-end` | Gap end, RFC3339 (default: now) |
 | `-replace` | Atomically replace rows in `[start, end)` for entities with replacement data |
 | `-no-epsilon` | Insert every recorded change without epsilon suppression |
-| `-no-refresh` | Skip refreshing the hourly/daily continuous aggregates |
+| `-no-refresh` | Skip refreshing the hourly/daily rollups |
 | `-dry-run` | Fetch and report counts without writing |
 
 After inserting, the command refreshes the `ha_numeric_1h`/`ha_numeric_1d`
-rollups for all hourly and daily buckets touched by the range — the automatic policies only cover the last 7 days, so
-backfilled history would otherwise never reach the aggregates. Run `-dry-run`
+rollups for all hourly and daily buckets touched by the range — the scheduled refreshes only cover the last day or two, so
+backfilled history would otherwise never reach the rollups. Run `-dry-run`
 first to check the counts. Pick `-start`/`-end` to match the gap precisely;
 `ha_numeric` has no unique key, so overlapping a range the poller already wrote
 will create duplicate rows (use `-replace` to replace those entities atomically).

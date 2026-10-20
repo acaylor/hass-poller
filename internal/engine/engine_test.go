@@ -410,3 +410,29 @@ func TestShouldWrite_UnitChanges(t *testing.T) {
 		}
 	}
 }
+
+func TestRunCycle_HeartbeatRewritesUnchangedValues(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		fetcher := &fakeFetcher{states: []ha.State{state("sensor.temp", "20", "°C")}}
+		st := &fakeStore{}
+		e := testEngine(fetcher, st, nil, nil, 0, nil)
+		if err := e.runCycle(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(HeartbeatInterval - time.Minute)
+		if err := e.runCycle(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if n := len(st.LastBatch()); n != 0 {
+			t.Fatalf("heartbeat written early: %d rows", n)
+		}
+		time.Sleep(time.Minute)
+		if err := e.runCycle(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		batch := st.LastBatch()
+		if len(batch) != 1 || batch[0].Value != 20 || batch[0].Unit != "°C" {
+			t.Fatalf("missing heartbeat: %+v", batch)
+		}
+	})
+}
