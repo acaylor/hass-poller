@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"reflect"
@@ -78,13 +79,14 @@ func TestSplitSQLStatements(t *testing.T) {
 // database operations fail the test rather than silently succeeding.
 type transactionPool struct {
 	pool
-	tx *replacementTx
+	tx *stagingTx
 }
 
 func (p *transactionPool) Begin(context.Context) (pgx.Tx, error) { return p.tx, nil }
 
-type replacementTx struct {
+type stagingTx struct {
 	pgx.Tx
+	execs      []string
 	deleteArgs []any
 	rows       [][]any
 	copyErr    error
@@ -93,16 +95,26 @@ type replacementTx struct {
 	rolledBack bool
 }
 
-func (tx *replacementTx) Exec(_ context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
-	if !strings.Contains(sql, "entity_id = ANY($3::text[])") {
-		return pgconn.CommandTag{}, errors.New("replacement delete must restrict entity IDs")
+func (tx *stagingTx) Exec(_ context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+	tx.execs = append(tx.execs, strings.Fields(sql)[0])
+	switch {
+	case strings.HasPrefix(sql, "DELETE"):
+		if !strings.Contains(sql, "entity_id IN (SELECT DISTINCT entity_id FROM ha_numeric_staging)") {
+			return pgconn.CommandTag{}, errors.New("replacement delete must restrict entity IDs")
+		}
+		tx.deleteArgs = args
+		return pgconn.NewCommandTag("DELETE 1"), nil
+	case strings.HasPrefix(sql, "INSERT"):
+		return pgconn.NewCommandTag(fmt.Sprintf("INSERT 0 %d", len(tx.rows))), nil
 	}
-	tx.deleteArgs = args
-	return pgconn.NewCommandTag("DELETE 1"), nil
+	return pgconn.NewCommandTag("CREATE TABLE"), nil
 }
-func (tx *replacementTx) CopyFrom(_ context.Context, _ pgx.Identifier, _ []string, rows pgx.CopyFromSource) (int64, error) {
+func (tx *stagingTx) CopyFrom(_ context.Context, table pgx.Identifier, _ []string, rows pgx.CopyFromSource) (int64, error) {
 	if tx.copyErr != nil {
 		return 0, tx.copyErr
+	}
+	if table[0] != "ha_numeric_staging" {
+		return 0, errors.New("rows must be staged")
 	}
 	for rows.Next() {
 		row, err := rows.Values()
@@ -113,21 +125,21 @@ func (tx *replacementTx) CopyFrom(_ context.Context, _ pgx.Identifier, _ []strin
 	}
 	return int64(len(tx.rows)), rows.Err()
 }
-func (tx *replacementTx) Commit(context.Context) error {
+func (tx *stagingTx) Commit(context.Context) error {
 	if tx.commitErr != nil {
 		return tx.commitErr
 	}
 	tx.committed = true
 	return nil
 }
-func (tx *replacementTx) Rollback(context.Context) error {
+func (tx *stagingTx) Rollback(context.Context) error {
 	if !tx.committed {
 		tx.rolledBack = true
 	}
 	return nil
 }
 
-func TestReplaceMeasurements_AtomicAndScoped(t *testing.T) {
+func TestStaging_AtomicAndScoped(t *testing.T) {
 	start := time.Date(2026, 6, 20, 0, 0, 0, 0, time.UTC)
 	end := start.Add(time.Hour)
 	measurements := []Measurement{
@@ -135,42 +147,65 @@ func TestReplaceMeasurements_AtomicAndScoped(t *testing.T) {
 		{Timestamp: start.Add(time.Minute), EntityID: "sensor.temp", Value: 21, Unit: ""},
 	}
 	for _, failure := range []string{"", "copy", "commit"} {
-		t.Run(failure, func(t *testing.T) {
-			tx := &replacementTx{}
-			failureErr := errors.New("database failure")
-			if failure == "copy" {
-				tx.copyErr = failureErr
-			}
-			if failure == "commit" {
-				tx.commitErr = failureErr
-			}
-			s := &Store{pool: &transactionPool{tx: tx}}
-			count, err := s.ReplaceMeasurements(context.Background(), start, end, measurements)
-			if failure != "" {
-				if !errors.Is(err, failureErr) || count != 0 || tx.committed || !tx.rolledBack {
-					t.Fatalf("failed replacement: count=%d err=%v committed=%v rolledBack=%v", count, err, tx.committed, tx.rolledBack)
+		for _, replace := range []bool{false, true} {
+			t.Run(fmt.Sprintf("failure=%s replace=%v", failure, replace), func(t *testing.T) {
+				tx := &stagingTx{}
+				failureErr := errors.New("database failure")
+				if failure == "copy" {
+					tx.copyErr = failureErr
 				}
-			} else {
+				if failure == "commit" {
+					tx.commitErr = failureErr
+				}
+				st, err := (&Store{pool: &transactionPool{tx: tx}}).BeginStaging(context.Background(), start, end)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer st.Rollback()
+				// Rows arrive in chunks.
+				err = st.Add(context.Background(), measurements[:1])
+				if err == nil {
+					err = st.Add(context.Background(), measurements[1:])
+				}
+				count := int64(0)
+				if err == nil {
+					count, err = st.Commit(context.Background(), replace)
+				}
+				if failure != "" {
+					st.Rollback() // Callers defer this; Commit also rolls back on failure.
+					if !errors.Is(err, failureErr) || count != 0 || tx.committed || !tx.rolledBack {
+						t.Fatalf("failed staging: count=%d err=%v committed=%v rolledBack=%v", count, err, tx.committed, tx.rolledBack)
+					}
+					return
+				}
 				if err != nil || count != 2 || !tx.committed {
 					t.Fatalf("count=%d err=%v committed=%v", count, err, tx.committed)
 				}
 				if tx.rows[0][3] != "°C" || tx.rows[1][3] != nil {
 					t.Fatalf("incorrect unit encoding: %+v", tx.rows)
 				}
-			}
-			if !reflect.DeepEqual(tx.deleteArgs, []any{start, end, []string{"sensor.temp"}}) {
-				t.Fatalf("unexpected replacement scope: %+v", tx.deleteArgs)
-			}
-		})
+				wantExecs := []string{"CREATE", "INSERT"}
+				if replace {
+					wantExecs = []string{"CREATE", "DELETE", "INSERT"}
+					if !reflect.DeepEqual(tx.deleteArgs, []any{start, end}) {
+						t.Fatalf("unexpected replacement range: %+v", tx.deleteArgs)
+					}
+				}
+				if !reflect.DeepEqual(tx.execs, wantExecs) {
+					t.Fatalf("got statements %v, want %v", tx.execs, wantExecs)
+				}
+			})
+		}
 	}
-	// Empty and out-of-range replacements must not even open a transaction.
-	s := &Store{}
-	if n, err := s.ReplaceMeasurements(context.Background(), start, end, nil); n != 0 || err != nil {
-		t.Fatalf("empty replacement: %d %v", n, err)
+
+	// Out-of-range rows are rejected before reaching the database.
+	st, err := (&Store{pool: &transactionPool{tx: &stagingTx{}}}).BeginStaging(context.Background(), start, end)
+	if err != nil {
+		t.Fatal(err)
 	}
-	measurements[0].Timestamp = end
-	if _, err := s.ReplaceMeasurements(context.Background(), start, end, measurements); err == nil {
-		t.Fatal("accepted out-of-range replacement")
+	defer st.Rollback()
+	if err := st.Add(context.Background(), []Measurement{{Timestamp: end, EntityID: "sensor.temp"}}); err == nil {
+		t.Fatal("accepted out-of-range measurement")
 	}
 }
 

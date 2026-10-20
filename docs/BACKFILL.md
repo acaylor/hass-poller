@@ -200,6 +200,12 @@ spec:
 - **Replacement scope.** `-replace` deletes and inserts in one transaction.
   An insert failure rolls back the deletion. Entities excluded by the filters
   or with no numeric replacement rows are left untouched.
+- **Memory and atomicity.** History is fetched and converted one day at a
+  time, and each day's rows are staged in a temporary table, so memory use does
+  not grow with the length of the range. Nothing reaches `ha_numeric` until
+  every day has been fetched; the staged rows are then applied in one
+  transaction, with or without `-replace`. The database transaction stays open
+  while history is fetched.
 - **Compression.** TimescaleDB compresses chunks older than the compression
   policy window (default 7 days). Inserting into — or `-replace`-deleting from —
   a compressed chunk may fail unless you `decompress_chunk()` it first. Recent

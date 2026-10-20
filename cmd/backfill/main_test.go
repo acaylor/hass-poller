@@ -2,6 +2,7 @@ package main
 
 import (
 	"reflect"
+	"sort"
 	"testing"
 	"time"
 
@@ -18,6 +19,11 @@ func ts(s string) time.Time {
 		panic(err)
 	}
 	return t
+}
+
+// buildMeasurements processes history as a single chunk ending at end.
+func buildMeasurements(history []ha.HistoryState, f *filter.GlobFilter, start, end time.Time, cfg config.Config, noEpsilon bool) []store.Measurement {
+	return newMeasurementBuilder(f, start, cfg, noEpsilon).add(history, end)
 }
 
 // withoutHeartbeats drops rows that repeat the entity's previous row one
@@ -158,4 +164,69 @@ func TestBuildMeasurements_UnitUpdateWithEarlierLastChanged(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %+v\nwant %+v", got, want)
 	}
+}
+
+func TestBackfillChunks_MatchesSinglePass(t *testing.T) {
+	start := ts("2026-06-20T06:00:00Z")
+	end := ts("2026-06-23T00:00:00Z")
+	// Recorded updates; the fake history API prepends the state in effect at
+	// each request's start, timestamped at that start, as Home Assistant does.
+	recorded := []ha.HistoryState{
+		{EntityID: "sensor.temp", State: "20", Unit: "°C", LastUpdated: ts("2026-06-19T12:00:00Z")},
+		{EntityID: "sensor.temp", State: "21", Unit: "°C", LastUpdated: ts("2026-06-20T23:50:00Z")},
+		{EntityID: "sensor.temp", State: "21", Unit: "°F", LastUpdated: ts("2026-06-21T08:00:00Z")},
+		{EntityID: "sensor.temp", State: "unavailable", LastUpdated: ts("2026-06-22T01:00:00Z")},
+		{EntityID: "sensor.temp", State: "70", Unit: "°F", LastUpdated: ts("2026-06-22T03:00:00Z")},
+		{EntityID: "sensor.power", State: "5", Unit: "W", LastUpdated: ts("2026-06-20T07:00:00Z")},
+	}
+	fetch := func(chunkStart, chunkEnd time.Time) ([]ha.HistoryState, error) {
+		var out []ha.HistoryState
+		inEffect := map[string]ha.HistoryState{}
+		for _, h := range recorded {
+			if !h.LastUpdated.After(chunkStart) {
+				h.LastUpdated = chunkStart
+				inEffect[h.EntityID] = h
+			}
+		}
+		for _, h := range inEffect {
+			out = append(out, h)
+		}
+		for _, h := range recorded {
+			if h.LastUpdated.After(chunkStart) && h.LastUpdated.Before(chunkEnd) {
+				out = append(out, h)
+			}
+		}
+		return out, nil
+	}
+	f := filter.NewGlobFilter(nil, nil)
+
+	for _, noEpsilon := range []bool{false, true} {
+		var chunked []store.Measurement
+		var chunks int
+		_, err := backfillChunks(start, end, fetch, newMeasurementBuilder(f, start, config.Config{}, noEpsilon),
+			func(m []store.Measurement) error {
+				chunks++
+				chunked = append(chunked, m...)
+				return nil
+			})
+		if err != nil {
+			t.Fatal(err)
+		}
+		whole, _ := fetch(start, end)
+		single := buildMeasurements(whole, f, start, end, config.Config{}, noEpsilon)
+		sortMeasurements(chunked)
+		sortMeasurements(single)
+		if chunks != 3 || !reflect.DeepEqual(chunked, single) {
+			t.Fatalf("no-epsilon=%v: %d chunks gave\n%+v\nsingle pass gave\n%+v", noEpsilon, chunks, chunked, single)
+		}
+	}
+}
+
+func sortMeasurements(m []store.Measurement) {
+	sort.Slice(m, func(i, j int) bool {
+		if m[i].EntityID != m[j].EntityID {
+			return m[i].EntityID < m[j].EntityID
+		}
+		return m[i].Timestamp.Before(m[j].Timestamp)
+	})
 }

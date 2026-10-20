@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -77,59 +78,57 @@ func main() {
 	}
 	logger.Printf("backfilling %d entities", len(entityIDs))
 
-	// Fetch a day at a time (to bound payload size) and in batches of entities
-	// (to stay under HA's request-line length limit).
-	const entityBatchSize = 40
 	logger.Printf("fetching history %s .. %s", start.Format(time.RFC3339), end.Format(time.RFC3339))
-	var history []ha.HistoryState
-	for chunkStart := start; chunkStart.Before(end); chunkStart = chunkStart.Add(24 * time.Hour) {
-		chunkEnd := chunkStart.Add(24 * time.Hour)
-		if chunkEnd.After(end) {
-			chunkEnd = end
+	// Stage rows in the database as each day is processed, then apply them in
+	// one transaction.
+	var db *store.Store
+	var staging *store.Staging
+	if !*dryRun {
+		if db, err = store.New(ctx, cfg.PGDSN); err != nil {
+			logger.Fatalf("connect to postgres: %v", err)
 		}
-		dayCount := 0
+		defer db.Close()
+		if staging, err = db.BeginStaging(ctx, start, end); err != nil {
+			logger.Fatalf("stage measurements: %v", err)
+		}
+		defer staging.Rollback()
+	}
+
+	fetch := func(chunkStart, chunkEnd time.Time) ([]ha.HistoryState, error) {
+		var history []ha.HistoryState
 		for i := 0; i < len(entityIDs); i += entityBatchSize {
 			batch := entityIDs[i:min(i+entityBatchSize, len(entityIDs))]
 			chunk, err := haClient.FetchHistory(ctx, chunkStart, chunkEnd, batch)
 			if err != nil {
-				logger.Fatalf("fetch history %s..%s: %v", chunkStart.Format(time.RFC3339), chunkEnd.Format(time.RFC3339), err)
+				return nil, err
 			}
-			for _, h := range chunk {
-				// Each later day repeats the state in effect at its start.
-				if chunkStart.After(start) && h.LastUpdated.Equal(chunkStart) {
-					continue
-				}
-				history = append(history, h)
-				dayCount++
-			}
+			history = append(history, chunk...)
 		}
-		logger.Printf("  %s: %d raw state updates", chunkStart.Format("2006-01-02"), dayCount)
+		logger.Printf("  %s: %d raw state updates", chunkStart.Format("2006-01-02"), len(history))
+		return history, nil
 	}
-
-	measurements := buildMeasurements(history, entityFilter, start, end, cfg, *noEpsilon)
-	logger.Printf("prepared %d measurements across %d state updates", len(measurements), len(history))
+	write := func(measurements []store.Measurement) error {
+		if staging == nil {
+			return nil
+		}
+		return staging.Add(ctx, measurements)
+	}
+	builder := newMeasurementBuilder(entityFilter, start, cfg, *noEpsilon)
+	prepared, err := backfillChunks(start, end, fetch, builder, write)
+	if err != nil {
+		logger.Fatalf("backfill: %v", err)
+	}
+	logger.Printf("prepared %d measurements", prepared)
 
 	if *dryRun {
 		logger.Printf("dry-run: nothing written")
 		return
 	}
-	if len(measurements) == 0 {
+	if prepared == 0 {
 		logger.Printf("no measurements to insert")
 		return
 	}
-
-	db, err := store.New(ctx, cfg.PGDSN)
-	if err != nil {
-		logger.Fatalf("connect to postgres: %v", err)
-	}
-	defer db.Close()
-
-	var inserted int64
-	if *replace {
-		inserted, err = db.ReplaceMeasurements(ctx, start, end, measurements)
-	} else {
-		inserted, err = db.InsertMeasurements(ctx, measurements)
-	}
+	inserted, err := staging.Commit(ctx, *replace)
 	if err != nil {
 		logger.Fatalf("insert measurements: %v", err)
 	}
@@ -142,81 +141,145 @@ func main() {
 	if err := db.RefreshRollups(ctx, start, end); err != nil {
 		logger.Fatalf("refresh rollups: %v", err)
 	}
-	logger.Printf("refreshed hourly and daily aggregates for the range")
+	logger.Printf("refreshed hourly and daily rollups for the range")
 }
 
-// buildMeasurements applies the same allow/block filtering, numeric parsing, and
-// per-entity epsilon change detection as the live poller, walking each entity's
-// history in chronological order so epsilon compares against the last written
-// value. Records are ordered and timestamped by last_updated so attribute-only
-// unit changes keep their time. Only records within [start, end) are kept; the
-// latest earlier record is the value in effect at start. Like the poller, an unchanged value is written
-// again every engine.HeartbeatInterval until the entity's next record.
-func buildMeasurements(
-	history []ha.HistoryState,
-	entityFilter *filter.GlobFilter,
+// entityBatchSize keeps history requests under HA's request-line length limit.
+const entityBatchSize = 40
+
+// backfillChunks fetches history a day at a time and writes each day's
+// measurements before fetching the next, so memory is bounded by one day of
+// history rather than the whole range. It returns the measurement count.
+func backfillChunks(
 	start, end time.Time,
-	cfg config.Config,
-	noEpsilon bool,
-) []store.Measurement {
+	fetch func(chunkStart, chunkEnd time.Time) ([]ha.HistoryState, error),
+	builder *measurementBuilder,
+	write func([]store.Measurement) error,
+) (int, error) {
+	prepared := 0
+	for chunkStart := start; chunkStart.Before(end); chunkStart = chunkStart.Add(24 * time.Hour) {
+		chunkEnd := chunkStart.Add(24 * time.Hour)
+		if chunkEnd.After(end) {
+			chunkEnd = end
+		}
+		history, err := fetch(chunkStart, chunkEnd)
+		if err != nil {
+			return prepared, fmt.Errorf("fetch history %s..%s: %w",
+				chunkStart.Format(time.RFC3339), chunkEnd.Format(time.RFC3339), err)
+		}
+		if chunkStart.After(start) {
+			// Each later day repeats the state in effect at its start.
+			kept := history[:0]
+			for _, h := range history {
+				if !h.LastUpdated.Equal(chunkStart) {
+					kept = append(kept, h)
+				}
+			}
+			history = kept
+		}
+		measurements := builder.add(history, chunkEnd)
+		if err := write(measurements); err != nil {
+			return prepared, fmt.Errorf("write measurements: %w", err)
+		}
+		prepared += len(measurements)
+	}
+	return prepared, nil
+}
+
+// measurementBuilder applies the same allow/block filtering, numeric parsing,
+// and per-entity epsilon change detection as the live poller. It is fed
+// consecutive chunks of history and keeps each entity's last written value
+// between them, so epsilon compares against the last written value across
+// chunk boundaries. Records are ordered and timestamped by last_updated so
+// attribute-only unit changes keep their time. The latest record before start
+// is the value in effect at start. Like the poller, an unchanged value is
+// written again every engine.HeartbeatInterval until the entity's next record.
+type measurementBuilder struct {
+	entityFilter *filter.GlobFilter
+	start        time.Time
+	cfg          config.Config
+	noEpsilon    bool
+	entities     map[string]*entityWalk
+}
+
+type entityWalk struct {
+	last     store.Measurement
+	held     bool
+	previous ha.HistoryState
+}
+
+func newMeasurementBuilder(entityFilter *filter.GlobFilter, start time.Time, cfg config.Config, noEpsilon bool) *measurementBuilder {
+	return &measurementBuilder{
+		entityFilter: entityFilter,
+		start:        start,
+		cfg:          cfg,
+		noEpsilon:    noEpsilon,
+		entities:     map[string]*entityWalk{},
+	}
+}
+
+// add returns the measurements for history records before until, which must
+// not precede the previous call's until.
+func (b *measurementBuilder) add(history []ha.HistoryState, until time.Time) []store.Measurement {
 	// Group by entity, preserving order, then sort each group by time.
 	byEntity := map[string][]ha.HistoryState{}
 	for _, h := range history {
-		if !entityFilter.Allowed(h.EntityID) {
+		if !b.entityFilter.Allowed(h.EntityID) {
 			continue
 		}
 		byEntity[h.EntityID] = append(byEntity[h.EntityID], h)
+		if b.entities[h.EntityID] == nil {
+			b.entities[h.EntityID] = &entityWalk{}
+		}
 	}
 
 	var out []store.Measurement
-	for entityID, series := range byEntity {
+	for entityID, w := range b.entities {
+		series := byEntity[entityID]
 		sort.SliceStable(series, func(i, j int) bool {
 			return series[i].LastUpdated.Before(series[j].LastUpdated)
 		})
 
-		eps := cfg.EpsilonDefault
-		if e, ok := cfg.EpsilonOverrides[entityID]; ok {
+		eps := b.cfg.EpsilonDefault
+		if e, ok := b.cfg.EpsilonOverrides[entityID]; ok {
 			eps = e
 		}
 
-		var last store.Measurement
-		held := false
 		heartbeat := func(until time.Time) {
-			for held && last.Timestamp.Add(engine.HeartbeatInterval).Before(until) {
-				last.Timestamp = last.Timestamp.Add(engine.HeartbeatInterval)
-				out = append(out, last)
+			for w.held && w.last.Timestamp.Add(engine.HeartbeatInterval).Before(until) {
+				w.last.Timestamp = w.last.Timestamp.Add(engine.HeartbeatInterval)
+				out = append(out, w.last)
 			}
 		}
-		var previous ha.HistoryState
 		for i, h := range series {
 			h.LastUpdated = h.LastUpdated.UTC()
-			if h.LastUpdated.Before(start) {
-				if i+1 < len(series) && !series[i+1].LastUpdated.After(start) {
+			if h.LastUpdated.Before(b.start) {
+				if i+1 < len(series) && !series[i+1].LastUpdated.After(b.start) {
 					continue // A later record is in effect at start.
 				}
-				h.LastUpdated = start
+				h.LastUpdated = b.start
 			}
-			if !h.LastUpdated.Before(end) {
+			if !h.LastUpdated.Before(until) {
 				break
 			}
-			if h == previous {
+			if h == w.previous {
 				continue
 			}
-			previous = h
+			w.previous = h
 			heartbeat(h.LastUpdated)
 			value, ok := engine.ParseNumericState(h.State)
 			if !ok {
-				held = false
+				w.held = false
 				continue
 			}
-			if held && !noEpsilon && !engine.ShouldWrite(value, last.Value, eps, false, h.Unit, last.Unit) {
+			if w.held && !b.noEpsilon && !engine.ShouldWrite(value, w.last.Value, eps, false, h.Unit, w.last.Unit) {
 				continue
 			}
-			last = store.Measurement{Timestamp: h.LastUpdated, EntityID: entityID, Value: value, Unit: h.Unit}
-			held = true
-			out = append(out, last)
+			w.last = store.Measurement{Timestamp: h.LastUpdated, EntityID: entityID, Value: value, Unit: h.Unit}
+			w.held = true
+			out = append(out, w.last)
 		}
-		heartbeat(end)
+		heartbeat(until)
 	}
 
 	return out

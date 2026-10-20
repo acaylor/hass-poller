@@ -21,6 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Order and timestamp backfilled history by `last_updated`, so a unit change
   without a value change is kept at its own time. Previously `last_changed`
   dropped such changes or backdated them.
+- Bound `backfill` memory to one day of history by converting each day as it
+  is fetched and staging its rows in a temporary table. All staged rows are
+  still applied in one transaction, which now also makes plain inserts atomic.
 
 ### Changed
 

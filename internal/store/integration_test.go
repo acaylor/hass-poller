@@ -325,3 +325,69 @@ func TestIntegration_BlockedWriteHonorsDeadline(t *testing.T) {
 		t.Fatal("pool unusable after a cancelled write")
 	}
 }
+
+func TestIntegration_StagingReplacesAtomically(t *testing.T) {
+	s := integrationStore(t)
+	ctx := context.Background()
+	if err := s.EnsureSchema(ctx, hasspoller.SchemaSQL); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Date(2026, 6, 20, 0, 0, 0, 0, time.UTC)
+	end := start.Add(2 * time.Hour)
+	insertRaw(t, s, "sensor.replaced", "W", start, 1, start.Add(time.Hour), 2, end, 3)
+	insertRaw(t, s, "sensor.untouched", "W", start.Add(time.Hour), 4)
+
+	count := func() map[string]int {
+		rows, err := s.pool.(interface {
+			Query(context.Context, string, ...any) (pgx.Rows, error)
+		}).Query(ctx, "SELECT entity_id, count(*) FROM ha_numeric GROUP BY entity_id")
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]int{}
+		for rows.Next() {
+			var id string
+			var n int
+			if err := rows.Scan(&id, &n); err != nil {
+				t.Fatal(err)
+			}
+			out[id] = n
+		}
+		return out
+	}
+
+	// A rolled-back staging run writes nothing.
+	st, err := s.BeginStaging(ctx, start, end)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Add(ctx, []Measurement{{Timestamp: start, EntityID: "sensor.replaced", Value: 9}}); err != nil {
+		t.Fatal(err)
+	}
+	st.Rollback()
+	if got := count(); got["sensor.replaced"] != 3 || got["sensor.untouched"] != 1 {
+		t.Fatalf("rollback changed rows: %v", got)
+	}
+
+	// Chunked replacement swaps only the staged entity's rows inside the range;
+	// the temporary table can be created again in the same session.
+	for range 2 {
+		st, err = s.BeginStaging(ctx, start, end)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, ts := range []time.Time{start.Add(time.Minute), start.Add(90 * time.Minute)} {
+			if err := st.Add(ctx, []Measurement{{Timestamp: ts, EntityID: "sensor.replaced", Value: 5, Unit: "W"}}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		n, err := st.Commit(ctx, true)
+		if err != nil || n != 2 {
+			t.Fatalf("commit: %d %v", n, err)
+		}
+	}
+	// Two replacement rows plus the untouched row at end.
+	if got := count(); got["sensor.replaced"] != 3 || got["sensor.untouched"] != 1 {
+		t.Fatalf("replacement scope wrong: %v", got)
+	}
+}

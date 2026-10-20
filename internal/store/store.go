@@ -75,46 +75,77 @@ func (s *Store) InsertMeasurements(ctx context.Context, measurements []Measureme
 	return count, nil
 }
 
-// ReplaceMeasurements atomically replaces [start, end) for entities represented
-// in measurements. Entities without replacement data are left untouched.
-func (s *Store) ReplaceMeasurements(ctx context.Context, start, end time.Time, measurements []Measurement) (int64, error) {
-	if len(measurements) == 0 {
-		return 0, nil
-	}
-	entityIDs := make([]string, 0)
-	seen := make(map[string]bool)
-	for _, m := range measurements {
-		if m.Timestamp.Before(start) || !m.Timestamp.Before(end) {
-			return 0, fmt.Errorf("replacement measurement outside [start, end)")
-		}
-		if !seen[m.EntityID] {
-			seen[m.EntityID] = true
-			entityIDs = append(entityIDs, m.EntityID)
-		}
-	}
+// Staging collects measurements for [start, end) in a temporary table inside
+// one transaction, so callers can stream rows without holding them in memory
+// and still apply them atomically.
+type Staging struct {
+	tx         pgx.Tx
+	start, end time.Time
+}
+
+// BeginStaging opens the staging transaction. Callers must Commit or Rollback.
+func (s *Store) BeginStaging(ctx context.Context, start, end time.Time) (*Staging, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("begin replacement: %w", err)
+		return nil, fmt.Errorf("begin staging: %w", err)
 	}
-	defer func() {
-		rollbackCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		tx.Rollback(rollbackCtx)
-	}()
 	if _, err := tx.Exec(ctx,
-		"DELETE FROM ha_numeric WHERE ts >= $1 AND ts < $2 AND entity_id = ANY($3::text[])",
-		start, end, entityIDs); err != nil {
-		return 0, fmt.Errorf("delete replacement range: %w", err)
+		"CREATE TEMP TABLE ha_numeric_staging (LIKE ha_numeric) ON COMMIT DROP"); err != nil {
+		rollback(tx)
+		return nil, fmt.Errorf("create staging table: %w", err)
 	}
-	count, err := tx.CopyFrom(ctx, pgx.Identifier{"ha_numeric"},
-		[]string{"ts", "entity_id", "value", "unit"}, measurementRows(measurements))
+	return &Staging{tx: tx, start: start, end: end}, nil
+}
+
+// Add stages measurements, which must lie within [start, end).
+func (st *Staging) Add(ctx context.Context, measurements []Measurement) error {
+	if len(measurements) == 0 {
+		return nil
+	}
+	for _, m := range measurements {
+		if m.Timestamp.Before(st.start) || !m.Timestamp.Before(st.end) {
+			return fmt.Errorf("staged measurement outside [start, end)")
+		}
+	}
+	if _, err := st.tx.CopyFrom(ctx, pgx.Identifier{"ha_numeric_staging"},
+		[]string{"ts", "entity_id", "value", "unit"}, measurementRows(measurements)); err != nil {
+		return fmt.Errorf("copy staged rows: %w", err)
+	}
+	return nil
+}
+
+// Commit inserts the staged rows into ha_numeric. With replace, it first
+// deletes [start, end) for the entities that have staged rows; entities without
+// replacement data are left untouched.
+func (st *Staging) Commit(ctx context.Context, replace bool) (int64, error) {
+	defer rollback(st.tx)
+	if replace {
+		if _, err := st.tx.Exec(ctx, `DELETE FROM ha_numeric WHERE ts >= $1 AND ts < $2
+			AND entity_id IN (SELECT DISTINCT entity_id FROM ha_numeric_staging)`,
+			st.start, st.end); err != nil {
+			return 0, fmt.Errorf("delete replacement range: %w", err)
+		}
+	}
+	tag, err := st.tx.Exec(ctx, `INSERT INTO ha_numeric (ts, entity_id, value, unit)
+		SELECT ts, entity_id, value, unit FROM ha_numeric_staging`)
 	if err != nil {
-		return 0, fmt.Errorf("copy replacement rows: %w", err)
+		return 0, fmt.Errorf("insert staged rows: %w", err)
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return 0, fmt.Errorf("commit replacement: %w", err)
+	if err := st.tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("commit staged rows: %w", err)
 	}
-	return count, nil
+	return tag.RowsAffected(), nil
+}
+
+// Rollback discards the staged rows. It is a no-op after Commit.
+func (st *Staging) Rollback() {
+	rollback(st.tx)
+}
+
+func rollback(tx pgx.Tx) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	tx.Rollback(ctx)
 }
 
 func measurementRows(measurements []Measurement) pgx.CopyFromSource {
