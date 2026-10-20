@@ -21,12 +21,14 @@ type Attributes struct {
 	UnitOfMeasurement string `json:"unit_of_measurement"`
 }
 
-// HistoryState is a single recorded state change returned by the history API.
+// HistoryState is a single recorded state returned by the history API.
+// LastUpdated also advances for attribute-only changes, such as a new unit,
+// which keep the previous last_changed.
 type HistoryState struct {
 	EntityID    string
 	State       string
 	Unit        string
-	LastChanged time.Time
+	LastUpdated time.Time
 }
 
 type Client struct {
@@ -64,8 +66,9 @@ func (c *Client) FetchStates(ctx context.Context) ([]State, error) {
 	return states, nil
 }
 
-// FetchHistory returns every recorded state change in [start, end] for the
-// given entities. At least one entity ID is required.
+// FetchHistory returns every recorded state update in [start, end] for the
+// given entities, led by each entity's state at start, timestamped start.
+// At least one entity ID is required.
 // Results are bounded by Home Assistant's recorder retention (purge_keep_days).
 func (c *Client) FetchHistory(ctx context.Context, start, end time.Time, entityIDs []string) ([]HistoryState, error) {
 	if len(entityIDs) == 0 {
@@ -93,6 +96,7 @@ func (c *Client) FetchHistory(ctx context.Context, start, end time.Time, entityI
 		State       string      `json:"state"`
 		Attributes  *Attributes `json:"attributes"`
 		LastChanged time.Time   `json:"last_changed"`
+		LastUpdated time.Time   `json:"last_updated"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
 		return nil, fmt.Errorf("decode history payload: %w", err)
@@ -111,11 +115,15 @@ func (c *Client) FetchHistory(ctx context.Context, start, end time.Time, entityI
 			if e.Attributes != nil {
 				unit = e.Attributes.UnitOfMeasurement
 			}
+			updated := e.LastUpdated
+			if updated.IsZero() {
+				updated = e.LastChanged
+			}
 			out = append(out, HistoryState{
 				EntityID:    entityID,
 				State:       e.State,
 				Unit:        unit,
-				LastChanged: e.LastChanged,
+				LastUpdated: updated,
 			})
 		}
 	}

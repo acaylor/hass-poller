@@ -19,7 +19,8 @@ rows it writes are consistent with what the poller produces. The differences:
 
 - **Source.** It calls Home Assistant's history API
   (`GET /api/history/period`) instead of `/api/states`.
-- **Timestamps.** Rows use Home Assistant's real `last_changed` time, so the
+- **Timestamps.** Rows use Home Assistant's real `last_updated` time, which
+  also dates attribute-only changes such as a new unit, so the
   backfilled window is actually *higher resolution* than the poller's
   once-per-`POLL_INTERVAL` snapshots. Expect the backfilled range to look denser
   than the periods around it; this is more accurate, not a bug. If you would

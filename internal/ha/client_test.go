@@ -197,8 +197,8 @@ func TestFetchHistory_FlattensSeriesAndCarriesUnit(t *testing.T) {
 	if last.EntityID != "sensor.humidity" || last.State != "41" || last.Unit != "%" {
 		t.Errorf("hist[3] = %+v, want humidity/41/%%", last)
 	}
-	if !hist[0].LastChanged.Equal(time.Date(2026, 6, 20, 0, 0, 0, 0, time.UTC)) {
-		t.Errorf("hist[0].LastChanged = %v", hist[0].LastChanged)
+	if !hist[0].LastUpdated.Equal(time.Date(2026, 6, 20, 0, 0, 0, 0, time.UTC)) {
+		t.Errorf("hist[0].LastUpdated = %v", hist[0].LastUpdated)
 	}
 }
 
@@ -247,5 +247,25 @@ func TestFetchHistory_UnitRemovalAndFractionalBounds(t *testing.T) {
 	}
 	if len(history) != 2 || history[1].Unit != "" {
 		t.Fatalf("unit removal lost: %+v", history)
+	}
+}
+
+func TestFetchHistory_AttributeOnlyUpdateUsesLastUpdated(t *testing.T) {
+	start := time.Date(2026, 6, 20, 0, 0, 0, 0, time.UTC)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The start state reports start for both timestamps; the in-range unit
+		// change keeps the value's earlier last_changed.
+		w.Write([]byte(`[[
+   {"entity_id":"sensor.temp","state":"20","attributes":{"unit_of_measurement":"°C"},"last_changed":"2026-06-20T00:00:00Z","last_updated":"2026-06-20T00:00:00Z"},
+   {"entity_id":"sensor.temp","state":"20","attributes":{"unit_of_measurement":"°F"},"last_changed":"2026-06-19T22:00:00Z","last_updated":"2026-06-20T00:10:00Z"}
+  ]]`))
+	}))
+	defer srv.Close()
+	history, err := NewClient(srv.URL, "token", time.Second).FetchHistory(context.Background(), start, start.Add(time.Hour), []string{"sensor.temp"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 2 || !history[1].LastUpdated.Equal(start.Add(10*time.Minute)) || history[1].Unit != "°F" {
+		t.Fatalf("attribute-only update misdated: %+v", history)
 	}
 }

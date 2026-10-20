@@ -18,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that cannot be converted. Previously a unit change mixed units in one bucket.
 - Bound each live database insert by the new `DB_WRITE_TIMEOUT` (default
   `30s`), so a write blocked on a lock no longer stops polling.
+- Order and timestamp backfilled history by `last_updated`, so a unit change
+  without a value change is kept at its own time. Previously `last_changed`
+  dropped such changes or backdated them.
 
 ### Changed
 

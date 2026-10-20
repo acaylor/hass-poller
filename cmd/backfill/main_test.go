@@ -43,15 +43,15 @@ func TestBuildMeasurements(t *testing.T) {
 
 	history := []ha.HistoryState{
 		// In allowlist, changing values.
-		{EntityID: "sensor.temp", State: "20.0", Unit: "°C", LastChanged: ts("2026-06-20T01:00:00Z")},
-		{EntityID: "sensor.temp", State: "20.0", Unit: "°C", LastChanged: ts("2026-06-20T02:00:00Z")}, // unchanged -> epsilon skip
-		{EntityID: "sensor.temp", State: "22.0", Unit: "°C", LastChanged: ts("2026-06-20T03:00:00Z")}, // changed -> keep
+		{EntityID: "sensor.temp", State: "20.0", Unit: "°C", LastUpdated: ts("2026-06-20T01:00:00Z")},
+		{EntityID: "sensor.temp", State: "20.0", Unit: "°C", LastUpdated: ts("2026-06-20T02:00:00Z")}, // unchanged -> epsilon skip
+		{EntityID: "sensor.temp", State: "22.0", Unit: "°C", LastUpdated: ts("2026-06-20T03:00:00Z")}, // changed -> keep
 		// Out-of-range entry must be excluded.
-		{EntityID: "sensor.temp", State: "99.0", Unit: "°C", LastChanged: ts("2026-06-22T00:00:00Z")},
+		{EntityID: "sensor.temp", State: "99.0", Unit: "°C", LastUpdated: ts("2026-06-22T00:00:00Z")},
 		// Blocked entity must be excluded.
-		{EntityID: "sensor.energy_meter", State: "5.0", Unit: "kWh", LastChanged: ts("2026-06-20T01:00:00Z")},
+		{EntityID: "sensor.energy_meter", State: "5.0", Unit: "kWh", LastUpdated: ts("2026-06-20T01:00:00Z")},
 		// Non-numeric must be excluded.
-		{EntityID: "sensor.mode", State: "heat", LastChanged: ts("2026-06-20T01:00:00Z")},
+		{EntityID: "sensor.mode", State: "heat", LastUpdated: ts("2026-06-20T01:00:00Z")},
 	}
 
 	f := filter.NewGlobFilter([]string{"sensor.*"}, []string{"sensor.energy_*"})
@@ -75,9 +75,9 @@ func TestBuildMeasurements_EpsilonOverrideAndNoEpsilon(t *testing.T) {
 	end := ts("2026-06-21T00:00:00Z")
 
 	history := []ha.HistoryState{
-		{EntityID: "sensor.noisy", State: "10.00", LastChanged: ts("2026-06-20T01:00:00Z")},
-		{EntityID: "sensor.noisy", State: "10.02", LastChanged: ts("2026-06-20T02:00:00Z")}, // within epsilon 0.1
-		{EntityID: "sensor.noisy", State: "10.30", LastChanged: ts("2026-06-20T03:00:00Z")}, // beyond epsilon
+		{EntityID: "sensor.noisy", State: "10.00", LastUpdated: ts("2026-06-20T01:00:00Z")},
+		{EntityID: "sensor.noisy", State: "10.02", LastUpdated: ts("2026-06-20T02:00:00Z")}, // within epsilon 0.1
+		{EntityID: "sensor.noisy", State: "10.30", LastUpdated: ts("2026-06-20T03:00:00Z")}, // beyond epsilon
 	}
 	f := filter.NewGlobFilter([]string{"sensor.*"}, nil)
 	cfg := config.Config{
@@ -99,12 +99,12 @@ func TestBuildMeasurements_EpsilonOverrideAndNoEpsilon(t *testing.T) {
 func TestBuildMeasurements_RangeAndDuplicateBoundaries(t *testing.T) {
 	start := ts("2026-06-20T00:00:00Z")
 	end := start.Add(24 * time.Hour)
-	first := ha.HistoryState{EntityID: "sensor.temp", State: "20", Unit: "°C", LastChanged: start}
+	first := ha.HistoryState{EntityID: "sensor.temp", State: "20", Unit: "°C", LastUpdated: start}
 	history := []ha.HistoryState{
-		{EntityID: "sensor.temp", State: "20", Unit: "°C", LastChanged: start.Add(-time.Hour)},
+		{EntityID: "sensor.temp", State: "20", Unit: "°C", LastUpdated: start.Add(-time.Hour)},
 		first, first, // Repeated boundary record from adjacent history requests.
-		{EntityID: "sensor.temp", State: "20", Unit: "°F", LastChanged: start.Add(time.Hour)},
-		{EntityID: "sensor.temp", State: "21", Unit: "°F", LastChanged: end},
+		{EntityID: "sensor.temp", State: "20", Unit: "°F", LastUpdated: start.Add(time.Hour)},
+		{EntityID: "sensor.temp", State: "21", Unit: "°F", LastUpdated: end},
 	}
 	for _, noEpsilon := range []bool{false, true} {
 		got := withoutHeartbeats(buildMeasurements(history, filter.NewGlobFilter(nil, nil), start, end, config.Config{}, noEpsilon))
@@ -119,12 +119,12 @@ func TestBuildMeasurements_HeartbeatsAndStartValue(t *testing.T) {
 	end := ts("2026-06-20T01:20:00Z")
 	history := []ha.HistoryState{
 		// Only the latest record before start is in effect at start.
-		{EntityID: "sensor.temp", State: "18", Unit: "°C", LastChanged: ts("2026-06-19T22:00:00Z")},
-		{EntityID: "sensor.temp", State: "19", Unit: "°C", LastChanged: ts("2026-06-19T23:00:00Z")},
-		{EntityID: "sensor.temp", State: "20", Unit: "°C", LastChanged: ts("2026-06-20T00:30:00Z")},
+		{EntityID: "sensor.temp", State: "18", Unit: "°C", LastUpdated: ts("2026-06-19T22:00:00Z")},
+		{EntityID: "sensor.temp", State: "19", Unit: "°C", LastUpdated: ts("2026-06-19T23:00:00Z")},
+		{EntityID: "sensor.temp", State: "20", Unit: "°C", LastUpdated: ts("2026-06-20T00:30:00Z")},
 		// A non-numeric state stops heartbeats until the next numeric value.
-		{EntityID: "sensor.temp", State: "unavailable", LastChanged: ts("2026-06-20T00:50:00Z")},
-		{EntityID: "sensor.temp", State: "20", Unit: "°C", LastChanged: ts("2026-06-20T01:10:00Z")},
+		{EntityID: "sensor.temp", State: "unavailable", LastUpdated: ts("2026-06-20T00:50:00Z")},
+		{EntityID: "sensor.temp", State: "20", Unit: "°C", LastUpdated: ts("2026-06-20T01:10:00Z")},
 	}
 	got := buildMeasurements(history, filter.NewGlobFilter(nil, nil), start, end, config.Config{}, false)
 
@@ -134,6 +134,26 @@ func TestBuildMeasurements_HeartbeatsAndStartValue(t *testing.T) {
 		{Timestamp: ts("2026-06-20T00:30:00Z"), EntityID: "sensor.temp", Value: 20, Unit: "°C"},
 		{Timestamp: ts("2026-06-20T00:45:00Z"), EntityID: "sensor.temp", Value: 20, Unit: "°C"},
 		{Timestamp: ts("2026-06-20T01:10:00Z"), EntityID: "sensor.temp", Value: 20, Unit: "°C"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %+v\nwant %+v", got, want)
+	}
+}
+
+func TestBuildMeasurements_UnitUpdateWithEarlierLastChanged(t *testing.T) {
+	start := ts("2026-06-20T00:00:00Z")
+	end := ts("2026-06-20T00:30:00Z")
+	// Decoded from history whose in-range unit update kept a last_changed from
+	// before start; FetchHistory timestamps it by last_updated.
+	history := []ha.HistoryState{
+		{EntityID: "sensor.temp", State: "20", Unit: "°C", LastUpdated: start},
+		{EntityID: "sensor.temp", State: "20", Unit: "°F", LastUpdated: ts("2026-06-20T00:10:00Z")},
+	}
+	got := buildMeasurements(history, filter.NewGlobFilter(nil, nil), start, end, config.Config{}, false)
+	want := []store.Measurement{
+		{Timestamp: start, EntityID: "sensor.temp", Value: 20, Unit: "°C"},
+		{Timestamp: ts("2026-06-20T00:10:00Z"), EntityID: "sensor.temp", Value: 20, Unit: "°F"},
+		{Timestamp: ts("2026-06-20T00:25:00Z"), EntityID: "sensor.temp", Value: 20, Unit: "°F"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %+v\nwant %+v", got, want)

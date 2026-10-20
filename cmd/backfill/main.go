@@ -94,14 +94,20 @@ func main() {
 			if err != nil {
 				logger.Fatalf("fetch history %s..%s: %v", chunkStart.Format(time.RFC3339), chunkEnd.Format(time.RFC3339), err)
 			}
-			history = append(history, chunk...)
-			dayCount += len(chunk)
+			for _, h := range chunk {
+				// Each later day repeats the state in effect at its start.
+				if chunkStart.After(start) && h.LastUpdated.Equal(chunkStart) {
+					continue
+				}
+				history = append(history, h)
+				dayCount++
+			}
 		}
-		logger.Printf("  %s: %d raw state changes", chunkStart.Format("2006-01-02"), dayCount)
+		logger.Printf("  %s: %d raw state updates", chunkStart.Format("2006-01-02"), dayCount)
 	}
 
 	measurements := buildMeasurements(history, entityFilter, start, end, cfg, *noEpsilon)
-	logger.Printf("prepared %d measurements across %d state changes", len(measurements), len(history))
+	logger.Printf("prepared %d measurements across %d state updates", len(measurements), len(history))
 
 	if *dryRun {
 		logger.Printf("dry-run: nothing written")
@@ -142,8 +148,9 @@ func main() {
 // buildMeasurements applies the same allow/block filtering, numeric parsing, and
 // per-entity epsilon change detection as the live poller, walking each entity's
 // history in chronological order so epsilon compares against the last written
-// value. Only changes within [start, end) are kept; the latest earlier record is
-// the value in effect at start. Like the poller, an unchanged value is written
+// value. Records are ordered and timestamped by last_updated so attribute-only
+// unit changes keep their time. Only records within [start, end) are kept; the
+// latest earlier record is the value in effect at start. Like the poller, an unchanged value is written
 // again every engine.HeartbeatInterval until the entity's next record.
 func buildMeasurements(
 	history []ha.HistoryState,
@@ -164,7 +171,7 @@ func buildMeasurements(
 	var out []store.Measurement
 	for entityID, series := range byEntity {
 		sort.SliceStable(series, func(i, j int) bool {
-			return series[i].LastChanged.Before(series[j].LastChanged)
+			return series[i].LastUpdated.Before(series[j].LastUpdated)
 		})
 
 		eps := cfg.EpsilonDefault
@@ -182,21 +189,21 @@ func buildMeasurements(
 		}
 		var previous ha.HistoryState
 		for i, h := range series {
-			h.LastChanged = h.LastChanged.UTC()
-			if h.LastChanged.Before(start) {
-				if i+1 < len(series) && !series[i+1].LastChanged.After(start) {
+			h.LastUpdated = h.LastUpdated.UTC()
+			if h.LastUpdated.Before(start) {
+				if i+1 < len(series) && !series[i+1].LastUpdated.After(start) {
 					continue // A later record is in effect at start.
 				}
-				h.LastChanged = start
+				h.LastUpdated = start
 			}
-			if !h.LastChanged.Before(end) {
+			if !h.LastUpdated.Before(end) {
 				break
 			}
 			if h == previous {
 				continue
 			}
 			previous = h
-			heartbeat(h.LastChanged)
+			heartbeat(h.LastUpdated)
 			value, ok := engine.ParseNumericState(h.State)
 			if !ok {
 				held = false
@@ -205,7 +212,7 @@ func buildMeasurements(
 			if held && !noEpsilon && !engine.ShouldWrite(value, last.Value, eps, false, h.Unit, last.Unit) {
 				continue
 			}
-			last = store.Measurement{Timestamp: h.LastChanged, EntityID: entityID, Value: value, Unit: h.Unit}
+			last = store.Measurement{Timestamp: h.LastUpdated, EntityID: entityID, Value: value, Unit: h.Unit}
 			held = true
 			out = append(out, last)
 		}

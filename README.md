@@ -140,7 +140,7 @@ If the database (or poller) was down, you can repair the gap from Home
 Assistant's own recorder history, which stores every state change independently
 of this service. The `backfill` command reuses the same config and the same
 filtering, numeric-parsing, and epsilon change-detection as the live poller, but
-uses HA's real `last_changed` timestamps (higher fidelity than the once-a-minute
+uses HA's real `last_updated` timestamps (higher fidelity than the once-a-minute
 poll). It is bounded by HA's recorder retention (`purge_keep_days`, default 10
 days); for older gaps use HA long-term statistics instead.
 
