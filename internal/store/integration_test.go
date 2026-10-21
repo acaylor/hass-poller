@@ -243,6 +243,59 @@ func TestIntegration_TimeWeightedRollups(t *testing.T) {
 	}
 }
 
+func TestIntegration_RefreshCoversHeldValues(t *testing.T) {
+	s := integrationStore(t)
+	ctx := context.Background()
+	if err := s.EnsureSchema(ctx, hasspoller.SchemaSQL); err != nil {
+		t.Fatal(err)
+	}
+	day := time.Date(2026, 6, 20, 0, 0, 0, 0, time.UTC)
+	midnight := day.Add(24 * time.Hour)
+
+	// The poller resumes at 00:10 after a gap ending at midnight.
+	insertRaw(t, s, "sensor.gap", "W", midnight.Add(10*time.Minute), 4)
+	if err := s.RefreshRollups(ctx, day, midnight.Add(48*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	checkRollup(t, rollups(t, s, "ha_numeric_1h", "sensor.gap"), midnight, "W", 4, 4, 4, 1, 3000)
+
+	// Backfilling the gap must refresh the buckets after it that its last
+	// heartbeat holds into.
+	insertRaw(t, s, "sensor.gap", "W", day.Add(23*time.Hour+45*time.Minute), 4)
+	if err := s.RefreshRollups(ctx, day.Add(23*time.Hour), midnight); err != nil {
+		t.Fatal(err)
+	}
+	checkRollup(t, rollups(t, s, "ha_numeric_1h", "sensor.gap"), midnight, "W", 4, 4, 4, 1, 3600)
+	daily := rollups(t, s, "ha_numeric_1d", "sensor.gap")
+	checkRollup(t, daily, day, "W", 4, 4, 4, 1, 900)
+	checkRollup(t, daily, midnight, "W", 4, 4, 4, 1, 4200)
+
+	// A hold raised in the job config applies to the refresh and its range.
+	mustExec(t, s, `SELECT alter_job(job_id, config => config || '{"hold": "2 hours"}')
+		FROM timescaledb_information.jobs
+		WHERE proc_schema = current_schema() AND proc_name = 'ha_numeric_rollup_job'`)
+	held := day.Add(22*time.Hour + 30*time.Minute)
+	insertRaw(t, s, "sensor.held", "", held, 1)
+	if err := s.RefreshRollups(ctx, held, held.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	checkRollup(t, rollups(t, s, "ha_numeric_1h", "sensor.held"), midnight, "", 1, 1, 1, 0, 1800)
+
+	// Incomplete buckets are left to the scheduled jobs.
+	now := time.Now().UTC()
+	insertRaw(t, s, "sensor.recent", "", now.Add(-2*time.Hour), 1, now.Add(-time.Minute), 1)
+	if err := s.RefreshRollups(ctx, now.Add(-2*time.Hour), now); err != nil {
+		t.Fatal(err)
+	}
+	for table, width := range map[string]time.Duration{"ha_numeric_1h": time.Hour, "ha_numeric_1d": 24 * time.Hour} {
+		for bucket := range rollups(t, s, table, "sensor.recent") {
+			if !bucket.Before(now.Truncate(width)) {
+				t.Errorf("%s wrote incomplete bucket %s", table, bucket)
+			}
+		}
+	}
+}
+
 func TestIntegration_MigratesContinuousAggregates(t *testing.T) {
 	s := integrationStore(t)
 	ctx := context.Background()

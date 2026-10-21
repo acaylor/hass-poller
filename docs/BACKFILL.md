@@ -32,8 +32,10 @@ rows it writes are consistent with what the poller produces. The differences:
   values beyond their one-hour hold.
 - **Rollup refresh.** After inserting, it calls `ha_numeric_refresh_rollup` for
   `ha_numeric_1h` and `ha_numeric_1d` over the full hourly and daily buckets
-  touched by the range. The scheduled refreshes only cover the last day or two,
-  so backfilled history would otherwise never reach the rollups.
+  touched by the range, plus the buckets up to one hold (one hour by default)
+  after `-end` that the last backfilled values carry into. The scheduled
+  refreshes only cover the last day or two, so backfilled history would
+  otherwise never reach the rollups.
 
 ## Data sources and their limits
 
@@ -121,7 +123,8 @@ SELECT count(*) FROM ha_numeric_1d WHERE bucket >= time_bucket('1 day', 'START':
 ```
 
 Refresh windows expand to complete UTC buckets, because each rollup bucket is
-recomputed as a whole.
+recomputed as a whole, and extend one hold past `END`. Buckets that have not
+completed yet, such as the current hour and day, are left to the scheduled jobs.
 
 ## Flags
 

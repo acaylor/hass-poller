@@ -63,7 +63,7 @@ Raw rows are irregular samples, so the rollups weight each value by how long it 
 
 Before aggregating, values recorded in another unit are converted to the bucket's final unit using `ha_unit`, where `base = value × base_scale + base_offset` and units of the same `dimension` are interconvertible. A value in a unit that cannot be converted (for example `%` followed by `ppm`) is left out of that bucket rather than mixed in. Add rows to `ha_unit` to teach the rollups more units; startup never overwrites existing rows.
 
-The rollups are plain tables recomputed by the `ha_numeric_refresh_rollup(rollup, width, start, end)` function. Two TimescaleDB jobs run `ha_numeric_rollup_job` for the recent buckets, and `backfill` refreshes the buckets it touches. A bucket is first written once it has completed, so the current hour and day are not yet in the rollups.
+The rollups are plain tables recomputed by the `ha_numeric_refresh_rollup(rollup, width, start, end)` function. It rewrites every completed bucket that raw rows in `[start, end)` contribute to, including the buckets those values hold into after `end`. Two TimescaleDB jobs run `ha_numeric_rollup_job` for the recent buckets, and `backfill` refreshes the buckets it touches. A bucket is first written once it has completed, so the current hour and day are not yet in the rollups. To change the one-hour hold, set `hold` in both jobs' config with `alter_job`; `backfill` refreshes use the same value.
 
 Versions before 0.3.0 stored the rollups as continuous aggregates of arithmetic means. Startup migrates them: buckets still covered by raw data are recomputed, and older buckets are kept with `seconds` and `unit` set to `NULL` to mark them as legacy arithmetic means.
 

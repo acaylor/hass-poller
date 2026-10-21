@@ -210,13 +210,15 @@ AS $$
   GROUP BY c.bucket, c.entity_id, c.target_unit
 $$;
 
--- Recompute every rollup bucket overlapping [range_start, range_end).
+-- Recompute every completed rollup bucket that raw rows in
+-- [range_start, range_end) contribute to, including the buckets their values
+-- hold into after range_end. A NULL hold uses the rollup job's configured hold.
 CREATE OR REPLACE FUNCTION ha_numeric_refresh_rollup(
   rollup      regclass,
   width       interval,
   range_start timestamptz,
   range_end   timestamptz,
-  hold        interval DEFAULT INTERVAL '1 hour'
+  hold        interval DEFAULT NULL
 )
 RETURNS bigint
 LANGUAGE plpgsql
@@ -224,11 +226,25 @@ SET timezone = 'UTC'
 AS $$
 DECLARE
   lo timestamptz := time_bucket(width, range_start);
-  hi timestamptz := time_bucket(width, range_end);
+  hi timestamptz;
   written bigint;
 BEGIN
-  IF hi < range_end THEN
+  IF hold IS NULL THEN
+    SELECT (j.config->>'hold')::interval INTO hold
+    FROM timescaledb_information.jobs j
+    JOIN pg_class c ON c.oid = rollup
+    JOIN pg_namespace ns ON ns.oid = c.relnamespace
+    WHERE j.proc_name = 'ha_numeric_rollup_job' AND j.proc_schema = ns.nspname
+      AND j.config->>'rollup' = c.relname;
+    hold := coalesce(hold, INTERVAL '1 hour');
+  END IF;
+  hi := time_bucket(width, range_end + hold);
+  IF hi < range_end + hold THEN
     hi := hi + width;
+  END IF;
+  hi := least(hi, time_bucket(width, now()));
+  IF hi <= lo THEN
+    RETURN 0;
   END IF;
   -- Serialize the scheduled job and backfill refreshes of the same rollup.
   PERFORM pg_advisory_xact_lock(rollup::oid::bigint);
@@ -253,7 +269,7 @@ BEGIN
     width,
     now() - (config->>'lookback')::interval,
     time_bucket(width, now(), 'UTC'),
-    coalesce((config->>'hold')::interval, INTERVAL '1 hour')
+    (config->>'hold')::interval
   );
 END
 $$;

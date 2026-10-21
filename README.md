@@ -162,7 +162,8 @@ docker compose exec poller /usr/local/bin/backfill -start 2026-06-20T00:00:00Z -
 | `-dry-run` | Fetch and report counts without writing |
 
 After inserting, the command refreshes the `ha_numeric_1h`/`ha_numeric_1d`
-rollups for all hourly and daily buckets touched by the range — the scheduled refreshes only cover the last day or two, so
+rollups for all completed hourly and daily buckets touched by the range, including
+the hour after it that the last values carry into — the scheduled refreshes only cover the last day or two, so
 backfilled history would otherwise never reach the rollups. Run `-dry-run`
 first to check the counts. Pick `-start`/`-end` to match the gap precisely;
 `ha_numeric` has no unique key, so overlapping a range the poller already wrote

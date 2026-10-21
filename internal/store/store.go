@@ -159,32 +159,21 @@ func measurementRows(measurements []Measurement) pgx.CopyFromSource {
 	})
 }
 
-// RefreshRollups recomputes the time-weighted hourly and daily rollups for
-// every bucket touched by [start, end). The scheduled rollup jobs only cover
-// the most recent buckets.
+// RefreshRollups recomputes the completed hourly and daily rollup buckets
+// that rows in [start, end) contribute to, including the buckets their values
+// hold into after end. The scheduled rollup jobs only cover the most recent
+// buckets.
 func (s *Store) RefreshRollups(ctx context.Context, start, end time.Time) error {
-	for _, rollup := range []struct {
-		table  string
-		width  string
-		bucket time.Duration
-	}{{"ha_numeric_1h", "1 hour", time.Hour}, {"ha_numeric_1d", "1 day", 24 * time.Hour}} {
-		from, to := refreshWindow(start, end, rollup.bucket)
+	for _, rollup := range []struct{ table, width string }{
+		{"ha_numeric_1h", "1 hour"}, {"ha_numeric_1d", "1 day"},
+	} {
 		if _, err := s.pool.Exec(ctx,
 			"SELECT ha_numeric_refresh_rollup($1::regclass, $2::interval, $3, $4)",
-			rollup.table, rollup.width, from, to); err != nil {
+			rollup.table, rollup.width, start.UTC(), end.UTC()); err != nil {
 			return fmt.Errorf("refresh %s: %w", rollup.table, err)
 		}
 	}
 	return nil
-}
-
-func refreshWindow(start, end time.Time, bucket time.Duration) (time.Time, time.Time) {
-	from := start.UTC().Truncate(bucket)
-	to := end.UTC().Truncate(bucket)
-	if to.Before(end) {
-		to = to.Add(bucket)
-	}
-	return from, to
 }
 
 // splitSQLStatements splits on semicolons outside quoted strings, comments, and

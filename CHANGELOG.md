@@ -12,7 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Weight the hourly and daily rollup averages by how long each value was in
   effect, carry values across bucket boundaries, and keep constant sensors in
   every bucket. Previously the rollups averaged recorded changes and skipped
-  unchanged sensors.
+  unchanged sensors. `backfill` also refreshes the buckets after its range
+  that the last backfilled values carry into, and leaves incomplete buckets to
+  the scheduled jobs.
 - Convert values to the unit in effect at the end of each rollup bucket before
   aggregating, using the new `ha_unit` table, and leave out values in units
   that cannot be converted. Previously a unit change mixed units in one bucket.

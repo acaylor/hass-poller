@@ -27,7 +27,7 @@ func main() {
 	endFlag := flag.String("end", "", "gap end time, RFC3339 (default: now)")
 	replace := flag.Bool("replace", false, "atomically replace rows in [start,end) for entities with replacement data")
 	noEpsilon := flag.Bool("no-epsilon", false, "insert every recorded change without epsilon suppression")
-	noRefresh := flag.Bool("no-refresh", false, "skip refreshing continuous aggregates")
+	noRefresh := flag.Bool("no-refresh", false, "skip refreshing the hourly and daily rollups")
 	dryRun := flag.Bool("dry-run", false, "fetch and report counts without writing")
 	flag.Parse()
 

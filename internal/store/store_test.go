@@ -209,29 +209,6 @@ func TestStaging_AtomicAndScoped(t *testing.T) {
 	}
 }
 
-func TestRefreshWindow(t *testing.T) {
-	zone := time.FixedZone("offset", -6*60*60)
-	start := time.Date(2026, 6, 20, 10, 30, 0, 0, zone)
-	end := start.Add(20 * time.Minute)
-	for _, tt := range []struct {
-		bucket   time.Duration
-		from, to time.Time
-	}{
-		{time.Hour, time.Date(2026, 6, 20, 16, 0, 0, 0, time.UTC), time.Date(2026, 6, 20, 17, 0, 0, 0, time.UTC)},
-		{24 * time.Hour, time.Date(2026, 6, 20, 0, 0, 0, 0, time.UTC), time.Date(2026, 6, 21, 0, 0, 0, 0, time.UTC)},
-	} {
-		from, to := refreshWindow(start, end, tt.bucket)
-		if !from.Equal(tt.from) || !to.Equal(tt.to) {
-			t.Fatalf("bucket %s: got %s..%s, want %s..%s", tt.bucket, from, to, tt.from, tt.to)
-		}
-		// An aligned exclusive end must not refresh the following bucket.
-		from, to = refreshWindow(tt.from, tt.to, tt.bucket)
-		if !from.Equal(tt.from) || !to.Equal(tt.to) {
-			t.Fatalf("aligned boundaries changed: %s..%s", from, to)
-		}
-	}
-}
-
 type execPool struct {
 	pool
 	execs [][]any
@@ -244,14 +221,16 @@ func (p *execPool) Exec(_ context.Context, sql string, args ...any) (pgconn.Comm
 
 func TestRefreshRollups(t *testing.T) {
 	p := &execPool{}
-	start := time.Date(2026, 6, 20, 10, 30, 0, 0, time.UTC)
-	if err := (&Store{pool: p}).RefreshRollups(context.Background(), start, start.Add(time.Hour)); err != nil {
+	// The database aligns the range to buckets, so it is passed through in UTC.
+	start := time.Date(2026, 6, 20, 4, 30, 0, 0, time.FixedZone("offset", -6*60*60))
+	end := start.Add(time.Hour)
+	if err := (&Store{pool: p}).RefreshRollups(context.Background(), start, end); err != nil {
 		t.Fatal(err)
 	}
 	const sql = "SELECT ha_numeric_refresh_rollup($1::regclass, $2::interval, $3, $4)"
 	want := [][]any{
-		{sql, "ha_numeric_1h", "1 hour", start.Truncate(time.Hour), start.Add(2 * time.Hour).Truncate(time.Hour)},
-		{sql, "ha_numeric_1d", "1 day", start.Truncate(24 * time.Hour), start.Truncate(24 * time.Hour).Add(24 * time.Hour)},
+		{sql, "ha_numeric_1h", "1 hour", start.UTC(), end.UTC()},
+		{sql, "ha_numeric_1d", "1 day", start.UTC(), end.UTC()},
 	}
 	if !reflect.DeepEqual(p.execs, want) {
 		t.Fatalf("got %+v\nwant %+v", p.execs, want)
