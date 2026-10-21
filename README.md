@@ -8,7 +8,7 @@ A small Go service that polls Home Assistant every minute, extracts numeric sens
 - Entity filtering via **allowlist** and **blocklist** with glob pattern matching
 - **Epsilon-based change detection** to avoid writing unchanged values (configurable per-entity)
 - Batch inserts via `pgx.CopyFrom` for efficient writes
-- Time-weighted hourly and daily rollups that convert units before aggregating
+- Time-weighted hourly and daily rollups, with one series per entity and unit
 - TimescaleDB compression (7 days) and tiered retention: raw 90 days, hourly 1 year, daily kept forever
 - Prometheus metrics at `/metrics` and health check at `/healthz`
 - Signal-driven cancellation and HTTP server shutdown
@@ -104,14 +104,14 @@ WHERE entity_id = 'sensor.kitchen_temperature' AND $__timeFilter(ts) ORDER BY ts
 
 -- Months (hourly time-weighted rollup, 1 year):
 SELECT bucket AS time, avg, min, max FROM ha_numeric_1h
-WHERE entity_id = 'sensor.kitchen_temperature' AND $__timeFilter(bucket) ORDER BY bucket;
+WHERE entity_id = 'sensor.kitchen_temperature' AND unit = '°C' AND $__timeFilter(bucket) ORDER BY bucket;
 
 -- Years (daily time-weighted rollup, kept forever):
 SELECT bucket AS time, avg, min, max FROM ha_numeric_1d
-WHERE entity_id = 'sensor.kitchen_temperature' AND $__timeFilter(bucket) ORDER BY bucket;
+WHERE entity_id = 'sensor.kitchen_temperature' AND unit = '°C' AND $__timeFilter(bucket) ORDER BY bucket;
 ```
 
-The raw table stores changes plus a heartbeat every 15 minutes, so use Grafana's "fill: previous" or "connect null values" to draw it. The rollups already account for how long each value lasted, and each rollup row reports its `unit`. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#rollup-semantics) for details.
+The raw table stores changes plus a heartbeat every 15 minutes, so use Grafana's "fill: previous" or "connect null values" to draw it. The rollups already account for how long each value lasted. They keep a separate series for each unit an entity has reported, so filter on `unit` (or select it as the series name) to avoid mixing values from before and after a unit change. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#rollup-semantics) for details.
 
 ## Backups
 

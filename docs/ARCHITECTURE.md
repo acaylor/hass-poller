@@ -34,9 +34,8 @@ The schema is embedded in the binary (`schema.sql`) and applied on startup. It i
 | Object | Granularity | Retention | Notes |
 |---|---|---|---|
 | `ha_numeric` | changes and 15-minute heartbeats | 90 days | Hypertable. Compressed after 7 days. Segment-by `entity_id`. |
-| `ha_numeric_1h` | hourly time-weighted `avg`/`min`/`max` per entity | 1 year | Hypertable refreshed every 15 minutes for completed buckets in the last day. |
-| `ha_numeric_1d` | daily (UTC) time-weighted `avg`/`min`/`max` per entity | forever | Hypertable refreshed hourly for completed buckets in the last 2 days. |
-| `ha_unit` | unit conversion factors | — | Seeded with Home Assistant's common units; local rows are kept. |
+| `ha_numeric_1h` | hourly time-weighted `avg`/`min`/`max` per entity and unit | 1 year | Hypertable refreshed every 15 minutes for completed buckets in the last day. |
+| `ha_numeric_1d` | daily (UTC) time-weighted `avg`/`min`/`max` per entity and unit | forever | Hypertable refreshed hourly for completed buckets in the last 2 days. |
 
 ### Tiered retention rationale
 
@@ -55,13 +54,13 @@ Raw rows are irregular samples, so the rollups weight each value by how long it 
 | Column | Meaning |
 |---|---|
 | `bucket` | Bucket start (UTC). |
-| `unit` | The unit in effect at the end of the bucket. `NULL` for unitless sensors. |
+| `unit` | The unit of the values aggregated in this row. `NULL` for unitless sensors. |
 | `avg` | Time-weighted mean over the covered part of the bucket. |
 | `min` / `max` | Extremes of the values in effect during the bucket, including a value carried in from before it. |
 | `n` | Raw rows recorded within the bucket. |
-| `seconds` | Seconds of the bucket with a known value. Less than the bucket width when an entity started, stopped, or changed to an incompatible unit. |
+| `seconds` | Seconds of the bucket with a known value in this unit. Less than the bucket width when an entity started, stopped, or changed unit. |
 
-Before aggregating, values recorded in another unit are converted to the bucket's final unit using `ha_unit`, where `base = value × base_scale + base_offset` and units of the same `dimension` are interconvertible. A value in a unit that cannot be converted (for example `%` followed by `ppm`) is left out of that bucket rather than mixed in. Add rows to `ha_unit` to teach the rollups more units; startup never overwrites existing rows.
+Each row aggregates the values of one entity in one unit; values in different units are never combined or converted. Home Assistant changes a sensor's unit when its display unit or the unit system is changed, or when an integration changes the unit it reports. A bucket in which the unit changed has one row per unit, and the old unit's value stops counting at the first row in the new unit. The key is `(entity_id, unit, bucket)`, with `NULL` units treated as equal.
 
 The rollups are plain tables recomputed by the `ha_numeric_refresh_rollup(rollup, width, start, end)` function. It rewrites every completed bucket that raw rows in `[start, end)` contribute to, including the buckets those values hold into after `end`. Two TimescaleDB jobs run `ha_numeric_rollup_job` for the recent buckets, and `backfill` refreshes the buckets it touches. A bucket is first written once it has completed, so the current hour and day are not yet in the rollups. To change the one-hour hold, set `hold` in both jobs' config with `alter_job`; `backfill` refreshes use the same value.
 

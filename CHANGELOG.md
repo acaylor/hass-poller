@@ -15,9 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unchanged sensors. `backfill` also refreshes the buckets after its range
   that the last backfilled values carry into, and leaves incomplete buckets to
   the scheduled jobs.
-- Convert values to the unit in effect at the end of each rollup bucket before
-  aggregating, using the new `ha_unit` table, and leave out values in units
-  that cannot be converted. Previously a unit change mixed units in one bucket.
+- Keep a separate rollup series for each unit an entity reports. Previously a
+  unit change mixed values in different units in one bucket.
 - Bound each live database insert by the new `DB_WRITE_TIMEOUT` (default
   `30s`), so a write blocked on a lock no longer stops polling.
 - Order and timestamp backfilled history by `last_updated`, so a unit change
@@ -33,6 +32,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Replace the `ha_numeric_1h` and `ha_numeric_1d` continuous aggregates with
   tables refreshed by TimescaleDB jobs, adding `unit` and `seconds` columns.
+  The rollups are now keyed by `(entity_id, unit, bucket)`, so Grafana queries
+  should filter or group by `unit`.
   Startup migrates existing aggregates, recomputing the buckets that raw data
   still covers and keeping older buckets with `NULL` `unit` and `seconds`. The
   first startup after upgrading recomputes up to 90 days of raw data.

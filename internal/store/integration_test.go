@@ -103,7 +103,13 @@ func insertRaw(t *testing.T, s *Store, entityID, unit string, points ...any) {
 	}
 }
 
-func rollups(t *testing.T, s *Store, table, entityID string) map[time.Time]rollupRow {
+// rollupKey identifies a rollup row of one entity. Unit is empty for NULL.
+type rollupKey struct {
+	Bucket time.Time
+	Unit   string
+}
+
+func rollups(t *testing.T, s *Store, table, entityID string) map[rollupKey]rollupRow {
 	t.Helper()
 	rows, err := s.pool.(interface {
 		Query(context.Context, string, ...any) (pgx.Rows, error)
@@ -112,14 +118,18 @@ func rollups(t *testing.T, s *Store, table, entityID string) map[time.Time]rollu
 	if err != nil {
 		t.Fatal(err)
 	}
-	out := map[time.Time]rollupRow{}
+	out := map[rollupKey]rollupRow{}
 	for rows.Next() {
 		var bucket time.Time
 		var r rollupRow
 		if err := rows.Scan(&bucket, &r.Unit, &r.Avg, &r.Min, &r.Max, &r.N, &r.Seconds); err != nil {
 			t.Fatal(err)
 		}
-		out[bucket.UTC()] = r
+		key := rollupKey{Bucket: bucket.UTC()}
+		if r.Unit != nil {
+			key.Unit = *r.Unit
+		}
+		out[key] = r
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
@@ -127,25 +137,21 @@ func rollups(t *testing.T, s *Store, table, entityID string) map[time.Time]rollu
 	return out
 }
 
-func checkRollup(t *testing.T, got map[time.Time]rollupRow, bucket time.Time, unit string, avg, min, max float64, n int64, seconds float64) {
+func checkRollup(t *testing.T, got map[rollupKey]rollupRow, bucket time.Time, unit string, avg, min, max float64, n int64, seconds float64) {
 	t.Helper()
-	r, ok := got[bucket]
+	r, ok := got[rollupKey{bucket, unit}]
 	if !ok {
-		t.Fatalf("no rollup for %s in %+v", bucket, got)
-	}
-	gotUnit := ""
-	if r.Unit != nil {
-		gotUnit = *r.Unit
+		t.Fatalf("no %q rollup for %s in %+v", unit, bucket, got)
 	}
 	near := func(a, b float64) bool { return math.Abs(a-b) < 1e-9 }
-	if gotUnit != unit || !near(r.Avg, avg) || !near(r.Min, min) || !near(r.Max, max) ||
+	if !near(r.Avg, avg) || !near(r.Min, min) || !near(r.Max, max) ||
 		r.N != n || r.Seconds == nil || !near(*r.Seconds, seconds) {
 		secs := "NULL"
 		if r.Seconds != nil {
 			secs = fmt.Sprint(*r.Seconds)
 		}
-		t.Errorf("%s: got unit=%q avg=%v min=%v max=%v n=%d seconds=%s, want %q %v %v %v %d %v",
-			bucket, gotUnit, r.Avg, r.Min, r.Max, r.N, secs, unit, avg, min, max, n, seconds)
+		t.Errorf("%s %q: got avg=%v min=%v max=%v n=%d seconds=%s, want %v %v %v %d %v",
+			bucket, unit, r.Avg, r.Min, r.Max, r.N, secs, avg, min, max, n, seconds)
 	}
 }
 
@@ -172,11 +178,12 @@ func TestIntegration_TimeWeightedRollups(t *testing.T) {
 	insertRaw(t, s, "sensor.constant", "°C", heartbeats...)
 	// A value with no later row expires after the one-hour hold.
 	insertRaw(t, s, "sensor.stopped", "", at(10, 30), 7)
-	// A convertible unit change: 10 °C (50 °F) for 30 minutes, then 68 °F.
+	// A unit change splits the bucket into one series per unit. The first
+	// unit's value ends at the first row in the new unit.
 	insertRaw(t, s, "sensor.temp", "°C", at(10, 0), 10)
-	insertRaw(t, s, "sensor.temp", "°F", at(10, 30), 68, at(11, 0), 68)
-	// An incompatible unit change keeps only the final unit's values.
-	insertRaw(t, s, "sensor.air", "%", at(10, 0), 50)
+	insertRaw(t, s, "sensor.temp", "°F", at(10, 30), 68, at(10, 45), 70, at(11, 0), 70)
+	// A unitless value is its own series too.
+	insertRaw(t, s, "sensor.air", "", at(10, 0), 50)
 	insertRaw(t, s, "sensor.air", "ppm", at(10, 30), 3, at(11, 0), 3)
 
 	if err := s.RefreshRollups(ctx, day, day.Add(48*time.Hour)); err != nil {
@@ -202,9 +209,15 @@ func TestIntegration_TimeWeightedRollups(t *testing.T) {
 	}
 
 	hourly = rollups(t, s, "ha_numeric_1h", "sensor.temp")
-	checkRollup(t, hourly, at(10, 0), "°F", 59, 50, 68, 2, 3600)
+	checkRollup(t, hourly, at(10, 0), "°C", 10, 10, 10, 1, 1800)
+	checkRollup(t, hourly, at(10, 0), "°F", 69, 68, 70, 2, 1800)
+	checkRollup(t, hourly, at(11, 0), "°F", 70, 70, 70, 1, 3600)
+	if len(hourly) != 3 {
+		t.Errorf("unexpected unit series: %+v", hourly)
+	}
 
 	hourly = rollups(t, s, "ha_numeric_1h", "sensor.air")
+	checkRollup(t, hourly, at(10, 0), "", 50, 50, 50, 1, 1800)
 	checkRollup(t, hourly, at(10, 0), "ppm", 3, 3, 3, 1, 1800)
 
 	// A partial refresh covers whole buckets and carries the value in effect
@@ -295,9 +308,9 @@ func TestIntegration_RefreshCoversHeldValues(t *testing.T) {
 		t.Fatal(err)
 	}
 	for table, width := range map[string]time.Duration{"ha_numeric_1h": time.Hour, "ha_numeric_1d": 24 * time.Hour} {
-		for bucket := range rollups(t, s, table, "sensor.recent") {
-			if !bucket.Before(now.Truncate(width)) {
-				t.Errorf("%s wrote incomplete bucket %s", table, bucket)
+		for key := range rollups(t, s, table, "sensor.recent") {
+			if !key.Bucket.Before(now.Truncate(width)) {
+				t.Errorf("%s wrote incomplete bucket %s", table, key.Bucket)
 			}
 		}
 	}
@@ -335,12 +348,12 @@ func TestIntegration_MigratesContinuousAggregates(t *testing.T) {
 	}
 
 	hourly := rollups(t, s, "ha_numeric_1h", "sensor.power")
-	if r := hourly[old]; r.Seconds != nil || r.Unit != nil || r.Avg != 15 || r.N != 2 {
+	if r := hourly[rollupKey{Bucket: old}]; r.Seconds != nil || r.Unit != nil || r.Avg != 15 || r.N != 2 {
 		t.Errorf("legacy bucket not preserved: %+v", r)
 	}
 	checkRollup(t, hourly, recent, "W", 1, 0, 60, 2, 3600)
 	daily := rollups(t, s, "ha_numeric_1d", "sensor.power")
-	if r := daily[old]; r.Seconds != nil || r.Avg != 15 {
+	if r := daily[rollupKey{Bucket: old}]; r.Seconds != nil || r.Avg != 15 {
 		t.Errorf("legacy daily bucket not preserved: %+v", r)
 	}
 	checkRollup(t, daily, recent, "W", 0.5, 0, 60, 3, 2*3600)
