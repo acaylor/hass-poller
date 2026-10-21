@@ -13,6 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Update the TimescaleDB Docker image from 2.29.2-pg16 to 2.30.2-pg16.
 - Update the Adminer Docker image from 6.0.1 to 6.1.1.
 
+### Security
+
+- Update Go from 1.27.1 to 1.27.3, in `go.mod` and the Docker build image,
+  fixing vulnerabilities in `net/http`, `crypto/tls`, and `net/textproto`.
+- Update `golang.org/x/text` from 0.40.0 to 0.41.0 (GO-2026-6629).
+
 ## [0.2.2] - 2026-09-05
 
 ### Fixed
