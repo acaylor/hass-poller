@@ -75,6 +75,13 @@ func integrationStore(t *testing.T) *Store {
 	return s
 }
 
+// testDay returns a UTC midnight recent enough that the raw retention policy,
+// which can run as soon as startup adds it, keeps the test's rows, and old
+// enough that the buckets the tests check have completed.
+func testDay() time.Time {
+	return time.Now().UTC().Truncate(24*time.Hour).AddDate(0, 0, -3)
+}
+
 func mustExec(t *testing.T, s *Store, sql string, args ...any) {
 	t.Helper()
 	if _, err := s.pool.Exec(context.Background(), sql, args...); err != nil {
@@ -152,7 +159,7 @@ func TestIntegration_TimeWeightedRollups(t *testing.T) {
 		t.Fatalf("schema is not idempotent: %v", err)
 	}
 
-	day := time.Date(2026, 6, 20, 0, 0, 0, 0, time.UTC)
+	day := testDay()
 	at := func(h, m int) time.Time { return day.Add(time.Duration(h)*time.Hour + time.Duration(m)*time.Minute) }
 
 	// 0 for 59 minutes, then 60 for one minute: time average 1, not 30.
@@ -249,7 +256,7 @@ func TestIntegration_RefreshCoversHeldValues(t *testing.T) {
 	if err := s.EnsureSchema(ctx, hasspoller.SchemaSQL); err != nil {
 		t.Fatal(err)
 	}
-	day := time.Date(2026, 6, 20, 0, 0, 0, 0, time.UTC)
+	day := testDay()
 	midnight := day.Add(24 * time.Hour)
 
 	// The poller resumes at 00:10 after a gap ending at midnight.
@@ -299,8 +306,8 @@ func TestIntegration_RefreshCoversHeldValues(t *testing.T) {
 func TestIntegration_MigratesContinuousAggregates(t *testing.T) {
 	s := integrationStore(t)
 	ctx := context.Background()
-	old := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
-	recent := time.Date(2026, 6, 20, 0, 0, 0, 0, time.UTC)
+	recent := testDay()
+	old := recent.AddDate(0, 0, -19)
 
 	// Build the pre-0.3.0 schema with materialized buckets, then drop the old
 	// raw rows as the retention policy would.
@@ -385,7 +392,7 @@ func TestIntegration_StagingReplacesAtomically(t *testing.T) {
 	if err := s.EnsureSchema(ctx, hasspoller.SchemaSQL); err != nil {
 		t.Fatal(err)
 	}
-	start := time.Date(2026, 6, 20, 0, 0, 0, 0, time.UTC)
+	start := testDay()
 	end := start.Add(2 * time.Hour)
 	insertRaw(t, s, "sensor.replaced", "W", start, 1, start.Add(time.Hour), 2, end, 3)
 	insertRaw(t, s, "sensor.untouched", "W", start.Add(time.Hour), 4)
