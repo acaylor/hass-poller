@@ -127,7 +127,9 @@ $$;
 
 -- Recompute every completed rollup bucket that raw rows in
 -- [range_start, range_end) contribute to, including the buckets their values
--- hold into after range_end. A NULL hold uses the rollup job's configured hold.
+-- hold into after range_end. Only entities with raw rows in the range are
+-- replaced, so rollups whose raw data has expired are kept. A NULL hold uses
+-- the rollup job's configured hold.
 CREATE OR REPLACE FUNCTION ha_numeric_refresh_rollup(
   rollup      regclass,
   width       interval,
@@ -163,7 +165,9 @@ BEGIN
   END IF;
   -- Serialize the scheduled job and backfill refreshes of the same rollup.
   PERFORM pg_advisory_xact_lock(rollup::oid::bigint);
-  EXECUTE format('DELETE FROM %s WHERE bucket >= $1 AND bucket < $2', rollup) USING lo, hi;
+  EXECUTE format('DELETE FROM %s WHERE bucket >= $1 AND bucket < $2 AND entity_id IN (
+                    SELECT DISTINCT entity_id FROM ha_numeric WHERE ts >= $1 - $3 AND ts < $2)', rollup)
+    USING lo, hi, hold;
   EXECUTE format('INSERT INTO %s (bucket, entity_id, unit, avg, min, max, n, seconds)
                   SELECT * FROM ha_numeric_time_weighted($1, $2, $3, $4)', rollup)
     USING width, lo, hi, hold;
@@ -201,8 +205,9 @@ WHERE NOT EXISTS (SELECT 1 FROM timescaledb_information.jobs
                   WHERE proc_schema = current_schema() AND proc_name = 'ha_numeric_rollup_job'
                     AND config->>'rollup' = 'ha_numeric_1d');
 
--- Finish migrating pre-0.3.0 rollups: keep the legacy rows (seconds IS NULL,
--- unit unknown) only where raw data no longer exists, and recompute the rest.
+-- Finish migrating pre-0.3.0 rollups: recompute everything raw data still
+-- covers, then keep each legacy row (seconds IS NULL, unit unknown) whose entity
+-- and bucket were not recomputed.
 DO $$
 DECLARE
   rollup text;
@@ -211,15 +216,15 @@ DECLARE
 BEGIN
   FOR rollup, width IN VALUES ('ha_numeric_1h', INTERVAL '1 hour'), ('ha_numeric_1d', INTERVAL '1 day') LOOP
     IF to_regclass(rollup || '_legacy') IS NOT NULL THEN
-      EXECUTE format('INSERT INTO %I (bucket, entity_id, unit, avg, min, max, n, seconds)
-                      SELECT bucket, entity_id, NULL, avg, min, max, n, NULL FROM %I
-                      WHERE $1 IS NULL OR bucket < time_bucket($2, $1, ''UTC'')
-                      ON CONFLICT DO NOTHING', rollup, rollup || '_legacy')
-        USING raw_start, width;
       IF raw_start IS NOT NULL THEN
         PERFORM ha_numeric_refresh_rollup(rollup::regclass, width, raw_start,
                                           time_bucket(width, now(), 'UTC'));
       END IF;
+      EXECUTE format('INSERT INTO %1$I (bucket, entity_id, unit, avg, min, max, n, seconds)
+                      SELECT l.bucket, l.entity_id, NULL, l.avg, l.min, l.max, l.n, NULL FROM %2$I l
+                      WHERE NOT EXISTS (SELECT 1 FROM %1$I r
+                                        WHERE r.entity_id = l.entity_id AND r.bucket = l.bucket)',
+                     rollup, rollup || '_legacy');
       EXECUTE format('DROP TABLE %I', rollup || '_legacy');
     END IF;
   END LOOP;

@@ -35,8 +35,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The rollups are now keyed by `(entity_id, unit, bucket)`, so Grafana queries
   should filter or group by `unit`.
   Startup migrates existing aggregates, recomputing the buckets that raw data
-  still covers and keeping older buckets with `NULL` `unit` and `seconds`. The
-  first startup after upgrading recomputes up to 90 days of raw data.
+  still covers and keeping every other entity's bucket with `NULL` `unit` and
+  `seconds`. The first startup after upgrading recomputes up to 90 days of raw
+  data. A refresh only replaces the rollups of entities with raw rows in its
+  range, so rollups whose raw data has expired are never discarded.
 - Write unchanged values every 15 minutes in the poller and `backfill`, so the
   rollups can distinguish constant sensors from ones that stopped reporting.
 - Start `backfill` from the value in effect at `-start`.

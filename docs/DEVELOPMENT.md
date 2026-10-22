@@ -77,7 +77,7 @@ go test ./...
 
 Unit tests are pure-Go and do not require a running database — store tests use fakes to check replacement scope, rollback paths, row encoding, and refresh calls.
 
-Integration tests apply `schema.sql` to a disposable TimescaleDB and check the time-weighted rollups, unit conversion, and the migration from the pre-0.3.0 continuous aggregates. Each run works in a fresh schema that is dropped afterwards. They are skipped unless `HASS_POLLER_TEST_DSN` is set:
+Integration tests apply `schema.sql` to a disposable TimescaleDB and check the time-weighted rollups, per-unit series, refresh ranges, and the migration from the pre-0.3.0 continuous aggregates. Each run works in a fresh schema that is dropped afterwards. They are skipped unless `HASS_POLLER_TEST_DSN` is set:
 
 ```bash
 docker run -d --rm --name hass-poller-test -p 55432:5432 \

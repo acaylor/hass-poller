@@ -342,21 +342,37 @@ func TestIntegration_MigratesContinuousAggregates(t *testing.T) {
 		}
 	}
 	mustExec(t, s, "DELETE FROM ha_numeric WHERE ts < $1", recent)
+	// An older backfill of another sensor moves the earliest raw row back.
+	insertRaw(t, s, "sensor.other", "W", old.Add(10*time.Minute), 1)
 
 	if err := s.EnsureSchema(ctx, hasspoller.SchemaSQL); err != nil {
 		t.Fatal(err)
 	}
 
-	hourly := rollups(t, s, "ha_numeric_1h", "sensor.power")
-	if r := hourly[rollupKey{Bucket: old}]; r.Seconds != nil || r.Unit != nil || r.Avg != 15 || r.N != 2 {
-		t.Errorf("legacy bucket not preserved: %+v", r)
+	checkMigrated := func() {
+		t.Helper()
+		hourly := rollups(t, s, "ha_numeric_1h", "sensor.power")
+		if r := hourly[rollupKey{Bucket: old}]; r.Seconds != nil || r.Unit != nil || r.Avg != 15 || r.N != 2 {
+			t.Errorf("legacy bucket not preserved: %+v", r)
+		}
+		checkRollup(t, hourly, recent, "W", 1, 0, 60, 2, 3600)
+		if r, ok := hourly[rollupKey{Bucket: recent}]; ok {
+			t.Errorf("recomputed bucket kept its legacy row: %+v", r)
+		}
+		daily := rollups(t, s, "ha_numeric_1d", "sensor.power")
+		if r := daily[rollupKey{Bucket: old}]; r.Seconds != nil || r.Avg != 15 {
+			t.Errorf("legacy daily bucket not preserved: %+v", r)
+		}
+		checkRollup(t, daily, recent, "W", 0.5, 0, 60, 3, 2*3600)
+		checkRollup(t, rollups(t, s, "ha_numeric_1h", "sensor.other"), old, "W", 1, 1, 1, 1, 3000)
 	}
-	checkRollup(t, hourly, recent, "W", 1, 0, 60, 2, 3600)
-	daily := rollups(t, s, "ha_numeric_1d", "sensor.power")
-	if r := daily[rollupKey{Bucket: old}]; r.Seconds != nil || r.Avg != 15 {
-		t.Errorf("legacy daily bucket not preserved: %+v", r)
+	checkMigrated()
+	// Refreshing a range whose raw data has expired keeps the rollups of the
+	// entities without raw rows there.
+	if err := s.RefreshRollups(ctx, old, old.Add(30*time.Minute)); err != nil {
+		t.Fatal(err)
 	}
-	checkRollup(t, daily, recent, "W", 0.5, 0, 60, 3, 2*3600)
+	checkMigrated()
 
 	var legacy int
 	if err := s.pool.(interface {
