@@ -39,8 +39,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `seconds`. The first startup after upgrading recomputes up to 90 days of raw
   data. A refresh only replaces the rollups of entities with raw rows in its
   range, so rollups whose raw data has expired are never discarded.
-- Write unchanged values every 15 minutes in the poller and `backfill`, so the
-  rollups can distinguish constant sensors from ones that stopped reporting.
+- Write the current value every 15 minutes in the poller and `backfill`, even
+  when epsilon suppressed it, so the rollups can distinguish constant sensors
+  from ones that stopped reporting.
 - Start `backfill` from the value in effect at `-start`.
 
 - Update `github.com/jackc/pgx/v5` from 5.10.0 to 5.11.0.

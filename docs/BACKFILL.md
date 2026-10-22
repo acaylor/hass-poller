@@ -26,10 +26,10 @@ rows it writes are consistent with what the poller produces. The differences:
   than the periods around it; this is more accurate, not a bug. If you would
   rather it blend in, run with a non-zero `EPSILON_DEFAULT` to suppress small
   changes.
-- **Heartbeats.** Like the poller, it rewrites an unchanged value every 15
-  minutes, starting from the value in effect at `-start`, until the entity's
-  next record or a non-numeric state. The rollups need these to carry constant
-  values beyond their one-hour hold.
+- **Heartbeats.** Like the poller, it writes the current value 15 minutes after
+  the last write, starting from the value in effect at `-start`, until a
+  non-numeric state. The current value may be one that epsilon suppressed. The
+  rollups need these to carry constant values beyond their one-hour hold.
 - **Rollup refresh.** After inserting, it calls `ha_numeric_refresh_rollup` for
   `ha_numeric_1h` and `ha_numeric_1d` over the full hourly and daily buckets
   touched by the range, plus the buckets up to one hold (one hour by default)

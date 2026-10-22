@@ -85,7 +85,7 @@ Each entity has an effective epsilon (per-entity override or `EPSILON_DEFAULT`).
 
 - If the absolute delta is `> epsilon`, the value is written and becomes the new "last written".
 - A unit change is written even when the numeric value stays the same.
-- A value is written regardless when 15 minutes have passed since the entity's last write. This heartbeat keeps the rollups' one-hour hold from expiring for constant sensors.
+- The current value is written regardless when 15 minutes have passed since the entity's last write. This heartbeat keeps the rollups' one-hour hold from expiring for constant sensors, and records values that epsilon suppressed.
 - Otherwise it is skipped.
 
 The cache advances only after the database insert succeeds.

@@ -82,8 +82,8 @@ func TestBuildMeasurements_EpsilonOverrideAndNoEpsilon(t *testing.T) {
 
 	history := []ha.HistoryState{
 		{EntityID: "sensor.noisy", State: "10.00", LastUpdated: ts("2026-06-20T01:00:00Z")},
-		{EntityID: "sensor.noisy", State: "10.02", LastUpdated: ts("2026-06-20T02:00:00Z")}, // within epsilon 0.1
-		{EntityID: "sensor.noisy", State: "10.30", LastUpdated: ts("2026-06-20T03:00:00Z")}, // beyond epsilon
+		{EntityID: "sensor.noisy", State: "10.02", LastUpdated: ts("2026-06-20T02:05:00Z")}, // within epsilon 0.1
+		{EntityID: "sensor.noisy", State: "10.30", LastUpdated: ts("2026-06-20T03:05:00Z")}, // beyond epsilon
 	}
 	f := filter.NewGlobFilter([]string{"sensor.*"}, nil)
 	cfg := config.Config{
@@ -91,14 +91,27 @@ func TestBuildMeasurements_EpsilonOverrideAndNoEpsilon(t *testing.T) {
 		EpsilonOverrides: map[string]float64{"sensor.noisy": 0.1},
 	}
 
-	withEps := withoutHeartbeats(buildMeasurements(history, f, start, end, cfg, false))
-	if len(withEps) != 2 {
-		t.Fatalf("with epsilon: got %d, want 2 (first + jump past 0.1)", len(withEps))
+	// Count the records written at their own time; a suppressed value is
+	// only written later, by a heartbeat.
+	recorded := func(measurements []store.Measurement) int {
+		n := 0
+		for _, m := range measurements {
+			for _, h := range history {
+				if m.Timestamp.Equal(h.LastUpdated) {
+					n++
+				}
+			}
+		}
+		return n
+	}
+	withEps := buildMeasurements(history, f, start, end, cfg, false)
+	if got := recorded(withEps); got != 2 {
+		t.Fatalf("with epsilon: got %d, want 2 (first + jump past 0.1)", got)
 	}
 
-	noEps := withoutHeartbeats(buildMeasurements(history, f, start, end, cfg, true))
-	if len(noEps) != 3 {
-		t.Fatalf("no-epsilon: got %d, want 3 (every change)", len(noEps))
+	noEps := buildMeasurements(history, f, start, end, cfg, true)
+	if got := recorded(noEps); got != 3 {
+		t.Fatalf("no-epsilon: got %d, want 3 (every change)", got)
 	}
 }
 
@@ -140,6 +153,28 @@ func TestBuildMeasurements_HeartbeatsAndStartValue(t *testing.T) {
 		{Timestamp: ts("2026-06-20T00:30:00Z"), EntityID: "sensor.temp", Value: 20, Unit: "°C"},
 		{Timestamp: ts("2026-06-20T00:45:00Z"), EntityID: "sensor.temp", Value: 20, Unit: "°C"},
 		{Timestamp: ts("2026-06-20T01:10:00Z"), EntityID: "sensor.temp", Value: 20, Unit: "°C"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %+v\nwant %+v", got, want)
+	}
+}
+
+func TestBuildMeasurements_HeartbeatWritesSuppressedValue(t *testing.T) {
+	start := ts("2026-06-20T00:00:00Z")
+	end := ts("2026-06-20T00:50:00Z")
+	history := []ha.HistoryState{
+		{EntityID: "sensor.temp", State: "20", Unit: "°C", LastUpdated: start},
+		// Within epsilon of the last written value, so only a heartbeat writes it.
+		{EntityID: "sensor.temp", State: "20.5", Unit: "°C", LastUpdated: ts("2026-06-20T00:01:00Z")},
+		{EntityID: "sensor.temp", State: "20.9", Unit: "°C", LastUpdated: ts("2026-06-20T00:20:00Z")},
+	}
+	got := buildMeasurements(history, filter.NewGlobFilter(nil, nil), start, end, config.Config{EpsilonDefault: 1}, false)
+
+	want := []store.Measurement{
+		{Timestamp: start, EntityID: "sensor.temp", Value: 20, Unit: "°C"},
+		{Timestamp: ts("2026-06-20T00:15:00Z"), EntityID: "sensor.temp", Value: 20.5, Unit: "°C"},
+		{Timestamp: ts("2026-06-20T00:30:00Z"), EntityID: "sensor.temp", Value: 20.9, Unit: "°C"},
+		{Timestamp: ts("2026-06-20T00:45:00Z"), EntityID: "sensor.temp", Value: 20.9, Unit: "°C"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %+v\nwant %+v", got, want)

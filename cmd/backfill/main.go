@@ -192,8 +192,9 @@ func backfillChunks(
 // between them, so epsilon compares against the last written value across
 // chunk boundaries. Records are ordered and timestamped by last_updated so
 // attribute-only unit changes keep their time. The latest record before start
-// is the value in effect at start. Like the poller, an unchanged value is
-// written again every engine.HeartbeatInterval until the entity's next record.
+// is the value in effect at start. Like the poller, the current value is
+// written every engine.HeartbeatInterval after the last write, even when
+// epsilon suppressed it, until the entity's next written record.
 type measurementBuilder struct {
 	entityFilter *filter.GlobFilter
 	start        time.Time
@@ -203,7 +204,8 @@ type measurementBuilder struct {
 }
 
 type entityWalk struct {
-	last     store.Measurement
+	last     store.Measurement // last written
+	current  store.Measurement // latest numeric value, written or not
 	held     bool
 	previous ha.HistoryState
 }
@@ -247,7 +249,8 @@ func (b *measurementBuilder) add(history []ha.HistoryState, until time.Time) []s
 
 		heartbeat := func(until time.Time) {
 			for w.held && w.last.Timestamp.Add(engine.HeartbeatInterval).Before(until) {
-				w.last.Timestamp = w.last.Timestamp.Add(engine.HeartbeatInterval)
+				w.current.Timestamp = w.last.Timestamp.Add(engine.HeartbeatInterval)
+				w.last = w.current
 				out = append(out, w.last)
 			}
 		}
@@ -272,10 +275,11 @@ func (b *measurementBuilder) add(history []ha.HistoryState, until time.Time) []s
 				w.held = false
 				continue
 			}
+			w.current = store.Measurement{Timestamp: h.LastUpdated, EntityID: entityID, Value: value, Unit: h.Unit}
 			if w.held && !b.noEpsilon && !engine.ShouldWrite(value, w.last.Value, eps, false, h.Unit, w.last.Unit) {
 				continue
 			}
-			w.last = store.Measurement{Timestamp: h.LastUpdated, EntityID: entityID, Value: value, Unit: h.Unit}
+			w.last = w.current
 			w.held = true
 			out = append(out, w.last)
 		}
