@@ -37,8 +37,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Startup migrates existing aggregates, recomputing the buckets that raw data
   still covers and keeping every other entity's bucket with `NULL` `unit` and
   `seconds`. The first startup after upgrading recomputes up to 90 days of raw
-  data. A refresh only replaces the rollups of entities with raw rows in its
-  range, so rollups whose raw data has expired are never discarded.
+  data. A refresh only replaces the buckets that an entity's raw rows hold
+  into, so rollups whose raw data has expired are never discarded.
 - Write the current value every 15 minutes in the poller and `backfill`, even
   when epsilon suppressed it, so the rollups can distinguish constant sensors
   from ones that stopped reporting.

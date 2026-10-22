@@ -215,9 +215,9 @@ spec:
   outages (within the compression window) are unaffected.
 - **Raw retention.** A raw backfill older than the `ha_numeric` retention policy
   (default 90 days) will be purged again. Beyond that window, only the rollups
-  are meaningful. Refreshing them replaces only the backfilled entities' rows,
-  but those entities' first and last buckets are recomputed from the backfilled
-  rows alone, so scope such a backfill to whole UTC days.
+  are meaningful. Refreshing them replaces only the buckets that backfilled
+  rows hold into, but a partly backfilled bucket is recomputed from the
+  backfilled rows alone, so scope such a backfill to whole UTC days.
 - **Resolution.** Backfilled rows come from Home Assistant's change events, so
   the window is denser than the poller's interval snapshots. Use
   `EPSILON_DEFAULT` to thin it if uniformity matters.

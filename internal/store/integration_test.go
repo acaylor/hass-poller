@@ -368,11 +368,14 @@ func TestIntegration_MigratesContinuousAggregates(t *testing.T) {
 	}
 	checkMigrated()
 	// Refreshing a range whose raw data has expired keeps the rollups of the
-	// entities without raw rows there.
-	if err := s.RefreshRollups(ctx, old, old.Add(30*time.Minute)); err != nil {
-		t.Fatal(err)
+	// entities without raw rows there, and the buckets of an entity whose raw
+	// rows cover only part of the range.
+	for _, end := range []time.Time{old.Add(30 * time.Minute), recent.Add(time.Hour)} {
+		if err := s.RefreshRollups(ctx, old, end); err != nil {
+			t.Fatal(err)
+		}
+		checkMigrated()
 	}
-	checkMigrated()
 
 	var legacy int
 	if err := s.pool.(interface {

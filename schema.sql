@@ -127,9 +127,9 @@ $$;
 
 -- Recompute every completed rollup bucket that raw rows in
 -- [range_start, range_end) contribute to, including the buckets their values
--- hold into after range_end. Only entities with raw rows in the range are
--- replaced, so rollups whose raw data has expired are kept. A NULL hold uses
--- the rollup job's configured hold.
+-- hold into after range_end. A bucket of an entity is replaced only when the
+-- entity has raw rows that can contribute to it, so rollups whose raw data
+-- has expired are kept. A NULL hold uses the rollup job's configured hold.
 CREATE OR REPLACE FUNCTION ha_numeric_refresh_rollup(
   rollup      regclass,
   width       interval,
@@ -165,9 +165,11 @@ BEGIN
   END IF;
   -- Serialize the scheduled job and backfill refreshes of the same rollup.
   PERFORM pg_advisory_xact_lock(rollup::oid::bigint);
-  EXECUTE format('DELETE FROM %s WHERE bucket >= $1 AND bucket < $2 AND entity_id IN (
-                    SELECT DISTINCT entity_id FROM ha_numeric WHERE ts >= $1 - $3 AND ts < $2)', rollup)
-    USING lo, hi, hold;
+  -- A raw row contributes to a bucket when its value holds into the bucket.
+  EXECUTE format('DELETE FROM %s t WHERE t.bucket >= $1 AND t.bucket < $2 AND EXISTS (
+                    SELECT 1 FROM ha_numeric r WHERE r.entity_id = t.entity_id
+                    AND r.ts > t.bucket - $3 AND r.ts < t.bucket + $4)', rollup)
+    USING lo, hi, hold, width;
   EXECUTE format('INSERT INTO %s (bucket, entity_id, unit, avg, min, max, n, seconds)
                   SELECT * FROM ha_numeric_time_weighted($1, $2, $3, $4)', rollup)
     USING width, lo, hi, hold;
