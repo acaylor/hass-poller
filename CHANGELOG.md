@@ -25,6 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Bound `backfill` memory to one day of history by converting each day as it
   is fetched and staging its rows in a temporary table. All staged rows are
   still applied in one transaction, which now also makes plain inserts atomic.
+- Preserve value, unit, and availability changes at backfill day boundaries,
+  including newly appearing entities, while skipping unchanged initial snapshots.
 - Anchor the `.gitignore` rule for the root `ha-timescale-poller` binary so
   it no longer hides new files under `cmd/ha-timescale-poller/`.
 

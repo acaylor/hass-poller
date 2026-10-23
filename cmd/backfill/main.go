@@ -168,12 +168,17 @@ func backfillChunks(
 				chunkStart.Format(time.RFC3339), chunkEnd.Format(time.RFC3339), err)
 		}
 		if chunkStart.After(start) {
-			// Each later day repeats the state in effect at its start.
+			// Skip a repeated initial snapshot only when its state and unit
+			// match the last history record. A genuine boundary change, or
+			// the first record of a new entity, must still be processed.
 			kept := history[:0]
 			for _, h := range history {
-				if !h.LastUpdated.Equal(chunkStart) {
-					kept = append(kept, h)
+				walk := builder.entities[h.EntityID]
+				if h.LastUpdated.Equal(chunkStart) && walk != nil &&
+					h.State == walk.previous.State && h.Unit == walk.previous.Unit {
+					continue
 				}
+				kept = append(kept, h)
 			}
 			history = kept
 		}

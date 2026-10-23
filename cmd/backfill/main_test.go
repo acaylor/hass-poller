@@ -214,25 +214,7 @@ func TestBackfillChunks_MatchesSinglePass(t *testing.T) {
 		{EntityID: "sensor.temp", State: "70", Unit: "°F", LastUpdated: ts("2026-06-22T03:00:00Z")},
 		{EntityID: "sensor.power", State: "5", Unit: "W", LastUpdated: ts("2026-06-20T07:00:00Z")},
 	}
-	fetch := func(chunkStart, chunkEnd time.Time) ([]ha.HistoryState, error) {
-		var out []ha.HistoryState
-		inEffect := map[string]ha.HistoryState{}
-		for _, h := range recorded {
-			if !h.LastUpdated.After(chunkStart) {
-				h.LastUpdated = chunkStart
-				inEffect[h.EntityID] = h
-			}
-		}
-		for _, h := range inEffect {
-			out = append(out, h)
-		}
-		for _, h := range recorded {
-			if h.LastUpdated.After(chunkStart) && h.LastUpdated.Before(chunkEnd) {
-				out = append(out, h)
-			}
-		}
-		return out, nil
-	}
+	fetch := recordedHistory(recorded)
 	f := filter.NewGlobFilter(nil, nil)
 
 	for _, noEpsilon := range []bool{false, true} {
@@ -254,6 +236,85 @@ func TestBackfillChunks_MatchesSinglePass(t *testing.T) {
 		if chunks != 3 || !reflect.DeepEqual(chunked, single) {
 			t.Fatalf("no-epsilon=%v: %d chunks gave\n%+v\nsingle pass gave\n%+v", noEpsilon, chunks, chunked, single)
 		}
+	}
+}
+
+func TestBackfillChunks_PreservesBoundaryStates(t *testing.T) {
+	start := ts("2026-06-20T06:00:00Z")
+	boundary := start.Add(24 * time.Hour)
+	end := boundary.Add(time.Hour)
+	for _, tc := range []struct {
+		name          string
+		before, after string
+		beforeUnit    string
+		afterUnit     string
+	}{
+		{name: "value change", before: "20", after: "21", beforeUnit: "°C", afterUnit: "°C"},
+		{name: "unit change", before: "20", after: "20", beforeUnit: "°C", afterUnit: "°F"},
+		{name: "becomes unavailable", before: "20", after: "unavailable"},
+		{name: "resumes reporting", before: "unavailable", after: "20"},
+		{name: "new entity", after: "20", afterUnit: "°C"},
+		{name: "unchanged numeric snapshot", before: "20", after: "20", beforeUnit: "°C", afterUnit: "°C"},
+		{name: "unchanged unavailable snapshot", before: "unavailable", after: "unavailable"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var recorded []ha.HistoryState
+			if tc.before != "" {
+				recorded = append(recorded, ha.HistoryState{
+					EntityID: "sensor.temp", State: tc.before, Unit: tc.beforeUnit, LastUpdated: start,
+				})
+			}
+			// Unchanged snapshots are supplied by each request's initial state,
+			// rather than by an additional recorded event in a single request.
+			if tc.before != tc.after || tc.beforeUnit != tc.afterUnit {
+				recorded = append(recorded, ha.HistoryState{
+					EntityID: "sensor.temp", State: tc.after, Unit: tc.afterUnit, LastUpdated: boundary,
+				})
+			}
+			fetch := recordedHistory(recorded)
+			f := filter.NewGlobFilter(nil, nil)
+			for _, noEpsilon := range []bool{false, true} {
+				var chunked []store.Measurement
+				_, err := backfillChunks(start, end, fetch, newMeasurementBuilder(f, start, config.Config{}, noEpsilon),
+					func(m []store.Measurement) error {
+						chunked = append(chunked, m...)
+						return nil
+					})
+				if err != nil {
+					t.Fatal(err)
+				}
+				whole, _ := fetch(start, end)
+				single := buildMeasurements(whole, f, start, end, config.Config{}, noEpsilon)
+				sortMeasurements(chunked)
+				sortMeasurements(single)
+				if !reflect.DeepEqual(chunked, single) {
+					t.Fatalf("no-epsilon=%v: chunked output (%d rows) differs from single pass (%d rows)", noEpsilon, len(chunked), len(single))
+				}
+			}
+		})
+	}
+}
+
+// recordedHistory models the history API's initial state and recorded updates.
+func recordedHistory(recorded []ha.HistoryState) func(time.Time, time.Time) ([]ha.HistoryState, error) {
+	return func(chunkStart, chunkEnd time.Time) ([]ha.HistoryState, error) {
+		var out []ha.HistoryState
+		inEffect := map[string]ha.HistoryState{}
+		for _, h := range recorded {
+			if !h.LastUpdated.After(chunkStart) {
+				h.LastUpdated = chunkStart
+				inEffect[h.EntityID] = h
+			}
+		}
+		for _, h := range inEffect {
+			out = append(out, h)
+		}
+		for _, h := range recorded {
+			if h.LastUpdated.After(chunkStart) && h.LastUpdated.Before(chunkEnd) {
+				out = append(out, h)
+			}
+		}
+		return out, nil
 	}
 }
 
