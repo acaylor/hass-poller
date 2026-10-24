@@ -110,7 +110,7 @@ func TestLoad(t *testing.T) {
 	clearOptionalEnv := func(t *testing.T) {
 		t.Helper()
 		for _, k := range []string{
-			"POLL_INTERVAL", "HTTP_TIMEOUT", "ENTITY_ALLOWLIST", "ENTITY_BLOCKLIST",
+			"POLL_INTERVAL", "HTTP_TIMEOUT", "DB_WRITE_TIMEOUT", "ENTITY_ALLOWLIST", "ENTITY_BLOCKLIST",
 			"EPSILON_DEFAULT", "HTTP_LISTEN_ADDR", "CONFIG_FILE",
 		} {
 			t.Setenv(k, "")
@@ -133,6 +133,9 @@ func TestLoad(t *testing.T) {
 		}
 		if cfg.HTTPTimeout != 10*time.Second {
 			t.Errorf("HTTPTimeout = %v, want 10s", cfg.HTTPTimeout)
+		}
+		if cfg.DBWriteTimeout != 30*time.Second {
+			t.Errorf("DBWriteTimeout = %v, want 30s", cfg.DBWriteTimeout)
 		}
 		if !reflect.DeepEqual(cfg.EntityAllowlist, []string{"sensor.*"}) {
 			t.Errorf("EntityAllowlist = %v", cfg.EntityAllowlist)
@@ -184,6 +187,7 @@ func TestLoad(t *testing.T) {
 	for _, tt := range []struct{ key, value string }{
 		{"POLL_INTERVAL", "0s"}, {"POLL_INTERVAL", "-1m"}, {"POLL_INTERVAL", "typo"},
 		{"HTTP_TIMEOUT", "0s"}, {"HTTP_TIMEOUT", "-1s"}, {"HTTP_TIMEOUT", "typo"},
+		{"DB_WRITE_TIMEOUT", "0s"}, {"DB_WRITE_TIMEOUT", "-1s"}, {"DB_WRITE_TIMEOUT", "typo"},
 		{"EPSILON_DEFAULT", "-0.1"}, {"EPSILON_DEFAULT", "NaN"},
 		{"EPSILON_DEFAULT", "+Inf"}, {"EPSILON_DEFAULT", "typo"},
 		{"ENTITY_ALLOWLIST", "sensor.["}, {"ENTITY_BLOCKLIST", "sensor.["},
@@ -245,6 +249,7 @@ func TestLoad(t *testing.T) {
 		clearOptionalEnv(t)
 		t.Setenv("POLL_INTERVAL", "30s")
 		t.Setenv("HTTP_TIMEOUT", "5s")
+		t.Setenv("DB_WRITE_TIMEOUT", "3s")
 		t.Setenv("ENTITY_ALLOWLIST", "sensor.*,binary_sensor.*")
 		t.Setenv("ENTITY_BLOCKLIST", "sensor.boring_*")
 		t.Setenv("EPSILON_DEFAULT", "0.1")
@@ -259,6 +264,9 @@ func TestLoad(t *testing.T) {
 		}
 		if cfg.HTTPTimeout != 5*time.Second {
 			t.Errorf("HTTPTimeout = %v", cfg.HTTPTimeout)
+		}
+		if cfg.DBWriteTimeout != 3*time.Second {
+			t.Errorf("DBWriteTimeout = %v", cfg.DBWriteTimeout)
 		}
 		want := []string{"sensor.*", "binary_sensor.*"}
 		if !reflect.DeepEqual(cfg.EntityAllowlist, want) {

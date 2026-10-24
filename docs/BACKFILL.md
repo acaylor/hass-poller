@@ -19,17 +19,23 @@ rows it writes are consistent with what the poller produces. The differences:
 
 - **Source.** It calls Home Assistant's history API
   (`GET /api/history/period`) instead of `/api/states`.
-- **Timestamps.** Rows use Home Assistant's real `last_changed` time, so the
+- **Timestamps.** Rows use Home Assistant's real `last_updated` time, which
+  also dates attribute-only changes such as a new unit, so the
   backfilled window is actually *higher resolution* than the poller's
   once-per-`POLL_INTERVAL` snapshots. Expect the backfilled range to look denser
   than the periods around it; this is more accurate, not a bug. If you would
   rather it blend in, run with a non-zero `EPSILON_DEFAULT` to suppress small
   changes.
-- **Aggregate refresh.** After inserting, it calls
-  `refresh_continuous_aggregate` on `ha_numeric_1h` and `ha_numeric_1d` for the
-  full hourly and daily buckets touched by the range. The automatic refresh policies only cover the recent window
-  (`start_offset` of 7 days), so backfilled history would otherwise never reach
-  the rollups.
+- **Heartbeats.** Like the poller, it writes the current value 15 minutes after
+  the last write, starting from the value in effect at `-start`, until a
+  non-numeric state. The current value may be one that epsilon suppressed. The
+  rollups need these to carry constant values beyond their one-hour hold.
+- **Rollup refresh.** After inserting, it calls `ha_numeric_refresh_rollup` for
+  `ha_numeric_1h` and `ha_numeric_1d` over the full hourly and daily buckets
+  touched by the range, plus the buckets up to one hold (one hour by default)
+  after `-end` that the last backfilled values carry into. The scheduled
+  refreshes only cover the last day or two, so backfilled history would
+  otherwise never reach the rollups.
 
 ## Data sources and their limits
 
@@ -49,7 +55,7 @@ a raw backfill is worth doing — older data should live only in the rollups.
 [README configuration table](../README.md#configuration)). At minimum:
 
 - `HA_BASE_URL`, `HA_TOKEN` — to read history.
-- `PG_DSN` — to write rows and refresh aggregates.
+- `PG_DSN` — to write rows and refresh rollups.
 - `ENTITY_ALLOWLIST` / `ENTITY_BLOCKLIST`, `EPSILON_DEFAULT`, `CONFIG_FILE` —
   set these to the **same values your poller uses** so the backfill matches.
 
@@ -100,7 +106,7 @@ recorder's `purge_keep_days`.
 ### 3. Backfill
 
 Drop `-dry-run` to perform the write. The command inserts the rows and refreshes
-the aggregates for the range:
+the rollups for the range:
 
 ```bash
 backfill -start 2026-01-20T16:16:00Z -end 2026-01-22T02:34:00Z
@@ -116,8 +122,9 @@ SELECT count(*) FROM ha_numeric_1h WHERE bucket >= time_bucket('1 hour', 'START'
 SELECT count(*) FROM ha_numeric_1d WHERE bucket >= time_bucket('1 day', 'START'::timestamptz) AND bucket < 'END';
 ```
 
-Refresh windows expand to complete UTC buckets because TimescaleDB excludes partial
-buckets from a refresh. See the [TimescaleDB refresh API](https://github.com/timescale/docs/blob/latest/api/continuous-aggregates/refresh_continuous_aggregate.md).
+Refresh windows expand to complete UTC buckets, because each rollup bucket is
+recomputed as a whole, and extend one hold past `END`. Buckets that have not
+completed yet, such as the current hour and day, are left to the scheduled jobs.
 
 ## Flags
 
@@ -127,7 +134,7 @@ buckets from a refresh. See the [TimescaleDB refresh API](https://github.com/tim
 | `-end` | Gap end, RFC3339 (default: now) |
 | `-replace` | Atomically replace rows in `[start, end)` for entities with replacement data |
 | `-no-epsilon` | Insert every recorded change without epsilon suppression |
-| `-no-refresh` | Skip refreshing the continuous aggregates |
+| `-no-refresh` | Skip refreshing the rollups |
 | `-dry-run` | Fetch and report counts without writing |
 
 ## Running the command
@@ -196,13 +203,21 @@ spec:
 - **Replacement scope.** `-replace` deletes and inserts in one transaction.
   An insert failure rolls back the deletion. Entities excluded by the filters
   or with no numeric replacement rows are left untouched.
+- **Memory and atomicity.** History is fetched and converted one day at a
+  time, and each day's rows are staged in a temporary table, so memory use does
+  not grow with the length of the range. Nothing reaches `ha_numeric` until
+  every day has been fetched; the staged rows are then applied in one
+  transaction, with or without `-replace`. The database transaction stays open
+  while history is fetched.
 - **Compression.** TimescaleDB compresses chunks older than the compression
   policy window (default 7 days). Inserting into — or `-replace`-deleting from —
   a compressed chunk may fail unless you `decompress_chunk()` it first. Recent
   outages (within the compression window) are unaffected.
 - **Raw retention.** A raw backfill older than the `ha_numeric` retention policy
   (default 90 days) will be purged again. Beyond that window, only the rollups
-  are meaningful, and continuous aggregates cannot be inserted into directly.
+  are meaningful. Refreshing them replaces only the buckets that backfilled
+  rows hold into, but a partly backfilled bucket is recomputed from the
+  backfilled rows alone, so scope such a backfill to whole UTC days.
 - **Resolution.** Backfilled rows come from Home Assistant's change events, so
   the window is denser than the poller's interval snapshots. Use
   `EPSILON_DEFAULT` to thin it if uniformity matters.

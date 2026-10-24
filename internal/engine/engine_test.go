@@ -27,6 +27,7 @@ func testEngine(
 		filter.NewGlobFilter(allow, block),
 		st,
 		time.Minute,
+		30*time.Second,
 		epsDefault,
 		overrides,
 		log.New(io.Discard, "", 0),
@@ -409,4 +410,55 @@ func TestShouldWrite_UnitChanges(t *testing.T) {
 			t.Errorf("unit %q -> %q: got %v, want %v", tt.last, tt.current, got, tt.want)
 		}
 	}
+}
+
+func TestRunCycle_HeartbeatRewritesUnchangedValues(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		fetcher := &fakeFetcher{states: []ha.State{state("sensor.temp", "20", "°C")}}
+		st := &fakeStore{}
+		e := testEngine(fetcher, st, nil, nil, 0, nil)
+		if err := e.runCycle(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(HeartbeatInterval - time.Minute)
+		if err := e.runCycle(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if n := len(st.LastBatch()); n != 0 {
+			t.Fatalf("heartbeat written early: %d rows", n)
+		}
+		time.Sleep(time.Minute)
+		if err := e.runCycle(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		batch := st.LastBatch()
+		if len(batch) != 1 || batch[0].Value != 20 || batch[0].Unit != "°C" {
+			t.Fatalf("missing heartbeat: %+v", batch)
+		}
+	})
+}
+
+func TestRunCycle_BlockedWriteTimesOutAndRetries(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		fetcher := &fakeFetcher{states: []ha.State{state("sensor.temp", "20", "°C")}}
+		st := &fakeStore{block: true}
+		e := testEngine(fetcher, st, nil, nil, 0, nil)
+		started := time.Now()
+		if err := e.runCycle(context.Background()); !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("got %v, want deadline exceeded", err)
+		}
+		if waited := time.Since(started); waited != e.writeTimeout {
+			t.Fatalf("write waited %s, want %s", waited, e.writeTimeout)
+		}
+		if !e.LastSuccessfulPoll().IsZero() {
+			t.Fatal("timed-out write advanced last poll")
+		}
+		st.block = false
+		if err := e.runCycle(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if batch := st.LastBatch(); len(batch) != 1 || batch[0].Value != 20 {
+			t.Fatalf("timed-out write was not retried: %+v", batch)
+		}
+	})
 }

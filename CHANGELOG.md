@@ -7,7 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Weight the hourly and daily rollup averages by how long each value was in
+  effect, carry values across bucket boundaries, and keep constant sensors in
+  every bucket. Previously the rollups averaged recorded changes and skipped
+  unchanged sensors. `backfill` also refreshes the buckets after its range
+  that the last backfilled values carry into, and leaves incomplete buckets to
+  the scheduled jobs.
+- Keep a separate rollup series for each unit an entity reports. Previously a
+  unit change mixed values in different units in one bucket.
+- Bound each live database insert by the new `DB_WRITE_TIMEOUT` (default
+  `30s`), so a write blocked on a lock no longer stops polling.
+- Order and timestamp backfilled history by `last_updated`, so a unit change
+  without a value change is kept at its own time. Previously `last_changed`
+  dropped such changes or backdated them.
+- Bound `backfill` memory to one day of history by converting each day as it
+  is fetched and staging its rows in a temporary table. All staged rows are
+  still applied in one transaction, which now also makes plain inserts atomic.
+- Preserve value, unit, and availability changes at backfill day boundaries,
+  including newly appearing entities, while skipping unchanged initial snapshots.
+- Anchor the `.gitignore` rule for the root `ha-timescale-poller` binary so
+  it no longer hides new files under `cmd/ha-timescale-poller/`.
+
 ### Changed
+
+- Replace the `ha_numeric_1h` and `ha_numeric_1d` continuous aggregates with
+  tables refreshed by TimescaleDB jobs, adding `unit` and `seconds` columns.
+  The rollups are now keyed by `(entity_id, unit, bucket)`, so Grafana queries
+  should filter or group by `unit`.
+  Startup migrates existing aggregates, recomputing the buckets that raw data
+  still covers and keeping every other entity's bucket with `NULL` `unit` and
+  `seconds`. The first startup after upgrading recomputes up to 90 days of raw
+  data. A refresh only replaces the buckets that an entity's raw rows hold
+  into, so rollups whose raw data has expired are never discarded.
+- Write the current value every 15 minutes in the poller and `backfill`, even
+  when epsilon suppressed it, so the rollups can distinguish constant sensors
+  from ones that stopped reporting.
+- Start `backfill` from the value in effect at `-start`.
 
 - Update `github.com/jackc/pgx/v5` from 5.10.0 to 5.11.0.
 - Update the TimescaleDB Docker image from 2.29.2-pg16 to 2.30.2-pg16.
