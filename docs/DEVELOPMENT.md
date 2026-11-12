@@ -81,7 +81,7 @@ Integration tests apply `schema.sql` to a disposable TimescaleDB and check the t
 
 ```bash
 docker run -d --rm --name hass-poller-test -p 55432:5432 \
-  -e POSTGRES_PASSWORD=test timescale/timescaledb:2.30.2-pg16
+  -e POSTGRES_PASSWORD=test timescale/timescaledb:2.31.0-pg16
 HASS_POLLER_TEST_DSN=postgres://postgres:test@localhost:55432/postgres?sslmode=disable \
   go test ./internal/store/ -run Integration
 ```
