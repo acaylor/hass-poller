@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Consolidate the pending dependency updates: Go 1.27.4 in `go.mod` and the
+  Docker builder, pgx 5.13.0, Prometheus client 1.25.0 and its transitive
+  dependencies, TimescaleDB 2.31.0-pg16, and Adminer 6.3.0.
+
 ## [0.3.0] - 2026-10-24
 
 ### Fixed
